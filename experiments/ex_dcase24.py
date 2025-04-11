@@ -1,32 +1,30 @@
-import csv
-import os
-from abc import ABC
-import math
-import sys
-import pytorch_lightning as pl
-import wandb
 import copy
 import itertools
+import math
+import os
+import string
+import sys
+from abc import ABC
+from collections import Counter
+from glob import glob
 
-from data.datasets.dataset_base_classes import ConcatDataset
-from data.datasets.clotho_v2 import clotho_v2, get_clotho_v2
-from data.datasets.audio_caps import audiocaps, get_audiocaps
-from data.datasets.wavcaps import wavcaps, get_wavecaps
-from data.datasets.audioset import audioset, get_audioset
-from data.data_loader import data_loader, get_train_data_loader, get_eval_data_loader
+import numpy as np
+import pytorch_lightning as pl
+import torch
+import torch.distributed as dist
+import wandb
+from nltk.corpus import stopwords
+from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
+from pytorch_lightning.loggers import WandbLogger
 from sacred import Experiment
 
-from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
-import torch
-from glob import glob
-from pytorch_lightning.loggers import WandbLogger
+from data.data_loader import data_loader, get_train_data_loader, get_eval_data_loader
+from data.datasets.audio_caps import audiocaps, get_audiocaps
+from data.datasets.audioset import audioset
+from data.datasets.clotho_v2 import clotho_v2, get_clotho_v2
+from data.datasets.dataset_base_classes import ConcatDataset
+from data.datasets.wavcaps import wavcaps, get_wavecaps
 from utils.directories import directories, get_model_dir, get_dataset_dir
-import numpy as np
-import torch.distributed as dist
-
-import string
-
-from nltk.corpus import stopwords
 
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 
@@ -43,9 +41,9 @@ audio_retrieval = Experiment('audio_retrieval', ingredients=[
     audioset
 ])
 
+
 @audio_retrieval.config
 def default_config():
-
     log_db_name = 'dcase24_workshop'
 
     # model loading and saving
@@ -72,7 +70,7 @@ def default_config():
         'aggregate': 'mean',
         'sequence_model': {
             'num_layers': 0,
-            'dim': 768, # 3840
+            'dim': 768,  # 3840
             'nhead': 12,
             'dim_feedforward': 2048,
             'use_first_token': True,
@@ -80,7 +78,7 @@ def default_config():
             'dropout': 0.1,
             'posencode_init': 'sinosoidal_fixed',
             'posencode_project': False,
-            'posencode_length': 64*3,
+            'posencode_length': 64 * 3,
             'posencode_weight': 1.0,
             'ablate_posencode': False,
             'normalize_input': False,
@@ -141,7 +139,7 @@ def default_config():
     monitor = 'mAP@10'
     enable_checkpointing = True
 
-    num_nodes=1
+    num_nodes = 1
 
     run_ba_benchmark = False
 
@@ -167,16 +165,16 @@ def default_config():
     use_raw_sentence_features = False
     use_separate_metadata_embedding_model = False
 
-    run_cmd=None
-    average_models=[]
+    run_cmd = None
+    average_models = []
 
-    loss_weight=1.0
-    distill_weight=0.0
-    distill_from=[]
+    loss_weight = 1.0
+    distill_weight = 0.0
+    distill_from = []
+
 
 @audio_retrieval.capture
 def run_one(log_db_name, train_on, resume_training, _config=None):
-
     run = wandb.init(reinit=True, project='dev' if _config['fast_dev_run'] else log_db_name)
 
     if not torch.cuda.is_available():
@@ -305,10 +303,14 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         )
 
         from models.text.sentence_embedding_models import get_sentence_embedding_model
-        self.sentence_embedding_model, self.tokenizer, text_output_size = get_sentence_embedding_model(self.kwargs['sentence_features']['model'])
+        self.sentence_embedding_model, self.tokenizer, text_output_size = get_sentence_embedding_model(
+            self.kwargs['sentence_features']['model'])
 
-        layer_sizes = [self.kwargs['audio_features']['sequence_model']['dim'] if self.kwargs['audio_features']['sequence_model']['num_layers'] > 0 else audio_output_size]
-        layer_sizes += [self.kwargs['audio_features']['adopt_layer_size']] * self.kwargs['audio_features']['adopt_n_layers']
+        layer_sizes = [
+            self.kwargs['audio_features']['sequence_model']['dim']
+            if self.kwargs['audio_features']['sequence_model']['num_layers'] > 0 else audio_output_size]
+        layer_sizes += [self.kwargs['audio_features']['adopt_layer_size']] * self.kwargs['audio_features'][
+            'adopt_n_layers']
         layer_sizes += [self.kwargs['shared_representation_size']]
         audio_layers = []
         for i, o in zip(layer_sizes[:-1], layer_sizes[1:]):
@@ -319,7 +321,8 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         self.project_audio = torch.nn.Sequential(*audio_layers)
 
         layer_sizes = [text_output_size]
-        layer_sizes += [self.kwargs['sentence_features']['adopt_layer_size']] * self.kwargs['sentence_features']['adopt_n_layers']
+        layer_sizes += ([self.kwargs['sentence_features']['adopt_layer_size']] *
+                        self.kwargs['sentence_features']['adopt_n_layers'])
         layer_sizes += [self.kwargs['shared_representation_size']]
         sentence_layers = []
         for i, o in zip(layer_sizes[:-1], layer_sizes[1:]):
@@ -329,7 +332,6 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         sentence_layers.pop()
         self.project_sentence = torch.nn.Sequential(*sentence_layers)
 
-
         initial_tau = torch.zeros((1,)) + self.kwargs['initial_tau']
         self.tau = torch.nn.Parameter(initial_tau, requires_grad=not self.kwargs['freeze_tau'])
 
@@ -337,9 +339,11 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         if self.kwargs['audio_features']['sequence_model'].get('reduce_sequence', 0) > 0:
             n = self.kwargs['audio_features']['sequence_model']['reduce_sequence']
             emb_dim = self.kwargs['audio_features']['sequence_model']['dim']
-            self.audio_output_projection = torch.nn.Linear(audio_output_size*n, emb_dim)
+            self.audio_output_projection = torch.nn.Linear(audio_output_size * n, emb_dim)
         else:
-            self.audio_output_projection = torch.nn.Identity() if audio_output_size == self.kwargs['audio_features']['sequence_model']['dim'] else torch.nn.Linear(audio_output_size, self.kwargs['audio_features']['sequence_model']['dim'])
+            self.audio_output_projection = torch.nn.Identity() \
+                if audio_output_size == self.kwargs['audio_features']['sequence_model']['dim'] \
+                else torch.nn.Linear(audio_output_size, self.kwargs['audio_features']['sequence_model']['dim'])
         self.posencode = PositionalEncoding(
             self.kwargs['audio_features']['sequence_model']['dim'],
             max_len=self.kwargs['audio_features']['sequence_model']['posencode_length'],
@@ -366,10 +370,12 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
 
         self.audio_sequence = torch.nn.ModuleList(ce_layers)
 
-        self.audio_token = torch.nn.Parameter(torch.randn((1, 1, self.kwargs['audio_features']['sequence_model']['dim'])) * 0.04, requires_grad=True)
+        self.audio_token = torch.nn.Parameter(
+            torch.randn((1, 1, self.kwargs['audio_features']['sequence_model']['dim'])) * 0.04, requires_grad=True)
         self.first = True
 
-        initial_tau = torch.zeros((1,)) + (self.kwargs['initial_timing_tau'] if self.kwargs.get('initial_timing_tau') else self.kwargs['initial_tau'])
+        initial_tau = torch.zeros((1,)) + (
+            self.kwargs['initial_timing_tau'] if self.kwargs.get('initial_timing_tau') else self.kwargs['initial_tau'])
         self.timing_tau = torch.nn.Parameter(initial_tau, requires_grad=not self.kwargs['freeze_tau'])
 
         self.validation_outputs = []
@@ -382,7 +388,8 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
                 out_path = os.path.join(get_model_dir(), pt_model)
                 if not os.path.exists(out_path):
                     continue
-                if not os.path.exists(os.path.join(out_path, self.kwargs['train_on'] + '_sentence_embeddings_train.pt')):
+                if not os.path.exists(
+                        os.path.join(out_path, self.kwargs['train_on'] + '_sentence_embeddings_train.pt')):
                     print("embeddings do not exist")
                     # cmd_generate_embeddings(model=None, load_parameters=pt_model)
                 se = torch.load(os.path.join(out_path, self.kwargs['train_on'] + '_sentence_embeddings_train.pt'))
@@ -399,6 +406,8 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         self.experiment_name = 'none'
         self.store_predictions = True
 
+        self.l = len(get_dataset_dir().split(os.path.sep))
+
     def forward_audio(self, batch, y=None, y_mask=None):
 
         device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -409,7 +418,7 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
             if self.kwargs['audio_features']['frozen']:
                 self.audio_embedding_model.eval()
             batch['audio_features'] = self.audio_embedding_model(batch['audio'], audio_length=batch['audio_length'])
-            batch['audio_features'] = batch['audio_features'].mean(1) # average over frequency dimension
+            batch['audio_features'] = batch['audio_features'].mean(1)  # average over frequency dimension
 
         audio_mask = []
         for i, f in enumerate(batch['audio_features']):
@@ -427,8 +436,8 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
             if self.kwargs['audio_features']['sequence_model'].get('reduce_sequence', 0) > 0:
                 B, L, D = audio_features.shape
                 N = self.kwargs['audio_features']['sequence_model']['reduce_sequence']
-                audio_features = audio_features.reshape(B, L//N, N, D).flatten(2)
-                audio_features_mask = audio_features_mask.reshape(B, L//N, N).max(2).values
+                audio_features = audio_features.reshape(B, L // N, N, D).flatten(2)
+                audio_features_mask = audio_features_mask.reshape(B, L // N, N).max(2).values
 
             audio_features = self.audio_output_projection(audio_features)
             if self.kwargs['audio_features']['sequence_model']['normalize_input']:
@@ -451,11 +460,10 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
             # batch['audio_features_raw'] = audio_features
 
             if self.kwargs['audio_features']['sequence_model']['audio_token_dropout'] > 0 and self.training:
-                i = torch.randperm(audio_features.shape[1])[:int(audio_features.shape[1] * (1-self.kwargs['audio_features']['sequence_model']['audio_token_dropout']))].sort().values
+                i = torch.randperm(audio_features.shape[1])[:int(audio_features.shape[1] * (
+                            1 - self.kwargs['audio_features']['sequence_model']['audio_token_dropout']))].sort().values
                 audio_features = audio_features[:, i, :]
                 audio_features_mask = audio_features_mask[:, i]
-
-
 
             if y is not None:
                 y = torch.concatenate([y, audio_token], dim=1)
@@ -492,7 +500,8 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
             batch['audio_features'] = audio_features
             batch['audio_features_mask'] = audio_features_mask
 
-        batch['audio_features'] = torch.nn.functional.dropout(batch['audio_features'], p=self.kwargs['projection_dropout'])
+        batch['audio_features'] = torch.nn.functional.dropout(batch['audio_features'],
+                                                              p=self.kwargs['projection_dropout'])
         batch['audio_features'] = self.project_audio(batch['audio_features'])
 
         return batch
@@ -524,7 +533,8 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         with torch.set_grad_enabled(not self.kwargs['sentence_features']['frozen']):
             if self.kwargs['sentence_features']['frozen']:
                 self.sentence_embedding_model.eval()
-            token_embeddings = self.sentence_embedding_model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])[0]
+            token_embeddings = \
+            self.sentence_embedding_model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])[0]
 
         batch['sentence_features'] = token_embeddings
         batch['sentence_features_mask'] = batch['attention_mask']
@@ -549,8 +559,10 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
             batch['sentence_features'] = sentence_features
             batch['sentence_features_mask'] = sentence_features_mask
 
-        batch['raw_sentence_features'] = torch.nn.functional.dropout(batch['sentence_features'], p=self.kwargs['projection_dropout'])
-        batch['sentence_features'] = torch.nn.functional.dropout(batch['sentence_features'], p=self.kwargs['projection_dropout'])
+        batch['raw_sentence_features'] = torch.nn.functional.dropout(batch['sentence_features'],
+                                                                     p=self.kwargs['projection_dropout'])
+        batch['sentence_features'] = torch.nn.functional.dropout(batch['sentence_features'],
+                                                                 p=self.kwargs['projection_dropout'])
 
         batch['sentence_features'] = self.project_sentence(batch['sentence_features'])
 
@@ -564,7 +576,8 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         ### forward audio features
         batch = self.forward_sentence(batch)
 
-        return batch['audio_features'], batch['sentence_features'], batch['audio_features_mask'], batch['sentence_features_mask']
+        return (batch['audio_features'], batch['sentence_features'],
+                batch['audio_features_mask'], batch['sentence_features_mask'])
 
     def rank_sequences(self, audio_features, audio_mask, sentence_features, sentence_mask, batch_idx=0, batch=None):
 
@@ -589,10 +602,13 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         I = (paths_all.unsqueeze(0) == paths_all.unsqueeze(1))
 
         if self.distributed_mode:
-            audio_features = self.all_gather(audio_features, sync_grads=True).reshape(-1, audio_features.shape[1], audio_features.shape[-1])
-            sentence_features = self.all_gather(sentence_features, sync_grads=True).reshape(-1, sentence_features[1], sentence_features.shape[-1])
+            audio_features = self.all_gather(audio_features, sync_grads=True).reshape(-1, audio_features.shape[1],
+                                                                                      audio_features.shape[-1])
+            sentence_features = self.all_gather(sentence_features, sync_grads=True).reshape(-1, sentence_features[1],
+                                                                                            sentence_features.shape[-1])
 
-        assert len(audio_features) == len(sentence_features), f"Captions: {len(batch['caption'])}, Audios: {len(batch['audio'])}, Audio Features Shape: {audio_features.shape} Sentence Features Shape: {sentence_features.shape}"
+        assert len(audio_features) == len(sentence_features),\
+            f"Captions: {len(batch['caption'])}, Audios: {len(batch['audio'])}, Audio Features Shape: {audio_features.shape} Sentence Features Shape: {sentence_features.shape}"
 
         if self.first:
             print("Audio Features Shape:", audio_features.shape)
@@ -600,31 +616,36 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
             self.first = False
 
         C = self.rank_sequences(audio_features, audio_mask, sentence_features, sentence_mask, batch=batch)
-        C = C / torch.abs(self.tau)
+        C /= torch.abs(self.tau)
 
-        C_audio = torch.log_softmax(C, dim=0)
-        C_text = torch.log_softmax(C, dim=1)
+        loss = 0
+        if self.kwargs.get('loss_weight', 0) > 0:
+            C_audio = torch.log_softmax(C, dim=0)
+            C_text = torch.log_softmax(C, dim=1)
 
-        assert C_audio.shape[0] == C_audio.shape[1], f'Audio Features Shape: {C_audio.shape} Sentence Features Shape: {C_text.shape}'
-        assert C_text.shape[0] == C_text.shape[1]
+            assert C_audio.shape[0] == C_audio.shape[1],\
+                f'Audio Features Shape: {C_audio.shape} Sentence Features Shape: {C_text.shape}'
+            assert C_text.shape[0] == C_text.shape[1]
 
-        loss = -0.5 * (C_audio[torch.where(I)].mean() + C_text[torch.where(I)].mean())
+            loss = -0.5 * (C_audio[torch.where(I)].mean() + C_text[torch.where(I)].mean())
 
-        self.log("train/loss", loss, batch_size=len(audio_features), sync_dist=True)
-        self.log('train/tau', torch.abs(self.tau), sync_dist=True)
+            self.log("train/loss", loss, batch_size=len(audio_features), sync_dist=True)
+            self.log('train/tau', torch.abs(self.tau), sync_dist=True)
 
-        loss = self.kwargs['loss_weight'] * loss
+            loss *= self.kwargs['loss_weight']
 
+        distill_loss = 0
         if self.kwargs.get('distill_weight', 0) > 0:
-            l = len(get_dataset_dir().split(os.path.sep))
-            ae = torch.stack([torch.stack(self.audio_embeddings[os.path.sep.join(p.split(os.path.sep)[l:])]) for p in batch['path']]) # A, EM, D
-            se = torch.stack([torch.stack(self.sentence_embeddings[c]) for c in batch['caption']]) # S, EM, D
+            sep = os.path.sep
+            ae = torch.stack([torch.stack(self.audio_embeddings[sep.join(p.split(sep)[self.l:])])
+                              for p in batch['path']])  # A, EM, D
+            se = torch.stack([torch.stack(self.sentence_embeddings[c]) for c in batch['caption']])  # S, EM, D
 
             # C_distilled = self.rank_sequences(ae, None, se, None).to(C.device)
             se = torch.nn.functional.normalize(se, p=2, dim=-1)
             ae = torch.nn.functional.normalize(ae, p=2, dim=-1)
             C_distilled = (ae[:, None] * se[None, :]).sum(-1).mean(-1).to(C.device)
-            C_distilled = C_distilled / torch.abs(self.tau)
+            C_distilled /= torch.abs(self.tau)
 
             distill_loss = 0.5 * (
                     torch.nn.functional.cross_entropy(C, torch.softmax(C_distilled, dim=1)) +
@@ -633,10 +654,9 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
 
             self.log('train/distill_C', distill_loss, sync_dist=True)
 
-            loss = self.kwargs['loss_weight'] * loss + self.kwargs['distill_weight'] * distill_loss
+            distill_loss *= self.kwargs['distill_weight']
 
-        return loss
-
+        return loss + distill_loss
 
     def validation_step(self, batch, batch_idx, dl_index=0, mode='val'):
 
@@ -647,7 +667,7 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
 
         args = {
             'audio_features': copy.deepcopy(audio_features[:, :2].detach()),
-            'audio_mask':  copy.deepcopy(audio_mask[:, :2].detach()),
+            'audio_mask': copy.deepcopy(audio_mask[:, :2].detach()),
             'sentence_features': copy.deepcopy(sentence_features[:, :1].detach()),
             'sentence_mask': copy.deepcopy(sentence_mask[:, :1].detach()),
             'keywords': batch['keywords'],
@@ -660,8 +680,6 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
 
         if type(args) is not tuple:
             args = [args]
-        import itertools
-        import numpy as np
         mode = args[0]['mode']
         paths = list(itertools.chain(*[batch['path'] for batch in args]))
         captions = list(itertools.chain(*[batch['caption'] for batch in args]))
@@ -688,15 +706,16 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         C_audio_ = torch.log_softmax(C_, dim=0)
         C_text_ = torch.log_softmax(C_, dim=1)
 
-        assert C_audio.shape[0] == C_audio.shape[
-            1], f'Audio Features Shape: {audio_features.shape} Sentence Features Shape: {sentence_features.shape}'
+        assert C_audio.shape[0] == C_audio.shape[1],\
+            f'Audio Features Shape: {audio_features.shape} Sentence Features Shape: {sentence_features.shape}'
         assert C_text.shape[0] == C_text.shape[1]
 
         # mode = kwargs.get('mode', 'val')
         loss = -0.5 * (C_audio[torch.where(I)].mean() + C_text[torch.where(I)].mean())
         loss_ = -0.5 * (C_audio_[torch.where(I)].mean() + C_text_[torch.where(I)].mean())
         self.log(f"{mode}/loss", loss.item(), batch_size=len(audio_features), add_dataloader_idx=False, sync_dist=True)
-        self.log(f"{mode}/loss_tau", loss_.item(), batch_size=len(audio_features), add_dataloader_idx=False, sync_dist=True)
+        self.log(f"{mode}/loss_tau", loss_.item(), batch_size=len(audio_features), add_dataloader_idx=False,
+                 sync_dist=True)
         args['path'] = paths
         args['caption'] = captions
         args['keywords'] = keywords
@@ -714,12 +733,11 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
                 self.validation_epoch_end(o, mode='val')
             return
 
-        import numpy as np
         paths = [p for b in outputs for p in b['path']]
         captions = [p for b in outputs for p in b['caption']]
         idxs = [i.item() for b in outputs for i in b['idx']]
-        keywords = [i for b in outputs for i in b['keywords']]
-        html = [i for b in outputs for i in b['html']]
+        # keywords = [i for b in outputs for i in b['keywords']]
+        # html = [i for b in outputs for i in b['html']]
         print('concatenating outputs')
 
         audio_features = torch.cat([o['audio_features'] for o in outputs])
@@ -728,35 +746,34 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         sentence_mask = torch.cat([o['sentence_mask'] for o in outputs])
 
         if self.distributed_mode:
-            #print("Gathering validation results from all nodes")
-            #print(f"local paths: {len(paths)}")
-            lp = len(paths)
-            #print(f"local paths: {paths[0]}")
-            all_paths= [None for _ in range(word_size)]
+            # print("Gathering validation results from all nodes")
+            # print(f"local paths: {len(paths)}")
+            # lp = len(paths)
+            # print(f"local paths: {paths[0]}")
+            all_paths = [None for _ in range(word_size)]
             dist.all_gather_object(all_paths, paths)
             paths = list(itertools.chain(*all_paths))
-            #print(f"all paths concat: {len(paths)}")
+            # print(f"all paths concat: {len(paths)}")
 
-            all_paths= [None for _ in range(word_size)]
+            all_paths = [None for _ in range(word_size)]
             dist.all_gather_object(all_paths, captions)
             captions = list(itertools.chain(*all_paths))
 
-            all_paths= [None for _ in range(word_size)]
+            all_paths = [None for _ in range(word_size)]
             dist.all_gather_object(all_paths, idxs)
             idxs = list(itertools.chain(*all_paths))
 
-
-            #print("audio_features.shape=", audio_features.shape)
-            all_audio_features  = self.all_gather(audio_features)
-            #print("all_audio_features.shape=", all_audio_features.shape)
+            # print("audio_features.shape=", audio_features.shape)
+            all_audio_features = self.all_gather(audio_features)
+            # print("all_audio_features.shape=", all_audio_features.shape)
             audio_features = all_audio_features.reshape(-1, audio_features.shape[-1])
-            #print("audio_features.shape=", audio_features.shape)
+            # print("audio_features.shape=", audio_features.shape)
 
-            #print("sentence_features.shape=", sentence_features.shape)
-            all_sentence_features  = self.all_gather(sentence_features)
-            #print("all_sentence_features.shape=", all_sentence_features.shape)
+            # print("sentence_features.shape=", sentence_features.shape)
+            all_sentence_features = self.all_gather(sentence_features)
+            # print("all_sentence_features.shape=", all_sentence_features.shape)
             sentence_features = all_sentence_features.reshape(-1, sentence_features.shape[-1])
-            #print("sentence_features.shape=", sentence_features.shape)
+            # print("sentence_features.shape=", sentence_features.shape)
         print('sorting outputs')
         _, sorted = np.unique(idxs, return_index=True)
 
@@ -767,7 +784,6 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         paths = np.array(paths)[sorted]
         captions = np.array(captions)[sorted]
 
-        from collections import Counter
         n_captions = Counter(paths)
         assert [v == n_captions[paths[0]] for k, v in n_captions.items()]
         n_captions = n_captions[paths[0]] if not self.kwargs['use_captions'] else 1
@@ -778,12 +794,12 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         for i in range(len(all_audio_features)):
             with torch.cuda.amp.autocast(enabled=True):
                 C_ = self.rank_sequences(
-                    all_audio_features[i:i+1],
-                    all_audio_masks[i:i+1],
+                    all_audio_features[i:i + 1],
+                    all_audio_masks[i:i + 1],
                     sentence_features[:],
                     sentence_mask[:]
                 )
-            C[:, i:i+1] = C_.T
+            C[:, i:i + 1] = C_.T
 
         if self.trainer.is_global_zero and self.store_predictions:
             print(self.logger)
@@ -801,14 +817,14 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         if self.kwargs['use_captions']:
             rows = []
             for i, c in enumerate(C):
-                j = (i +1) % 5
+                j = (i + 1) % 5
                 rows.append(c[j::5])
             C = torch.stack(rows)
             n_captions = 5
 
         top_ten = C.topk(10, dim=1)[1]
 
-        target = torch.arange(len(audio_features)//n_captions)
+        target = torch.arange(len(audio_features) // n_captions)
         target = torch.repeat_interleave(target, n_captions)
 
         r_1 = (top_ten[:, :1] == target[:, None]).float().sum(axis=1).mean().item()
@@ -881,20 +897,22 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
 
 
 @audio_retrieval.capture
-def update_lr(optimizer, epoch, lr_audio_encoder, lr_sentence_encoder, lr_audio_project, lr_sentence_project, min_lr, warmup_length, rampdown_start, rampdown_stop, max_epochs, warmup_type='linear', rampdown_type='cosine'):
+def update_lr(optimizer, epoch, lr_audio_encoder, lr_sentence_encoder, lr_audio_project, lr_sentence_project, min_lr,
+              warmup_length, rampdown_start, rampdown_stop, max_epochs, warmup_type='linear', rampdown_type='cosine'):
     """Decay the learning rate with half-cycle cosine after warmup"""
     if rampdown_stop <= 0:
         rampdown_stop = max_epochs
 
     lrs = [lr_audio_encoder, lr_sentence_encoder, lr_audio_project, lr_sentence_project]
+    lr = lrs[-1]
     for i, lr in enumerate(lrs):
         if epoch < warmup_length:
             if warmup_type == 'linear':
-                lr = lr * epoch / warmup_length
+                lr *= epoch / warmup_length
             elif warmup_type == 'exp':
                 epoch = np.clip(epoch, 0.5, warmup_length)
                 phase = 1.0 - epoch / warmup_length
-                lr = lr * float(np.exp(-5.0 * phase * phase))
+                lr *= float(np.exp(-5.0 * phase * phase))
             else:
                 raise NotImplementedError
         elif epoch < rampdown_start:
@@ -909,7 +927,7 @@ def update_lr(optimizer, epoch, lr_audio_encoder, lr_sentence_encoder, lr_audio_
                 distance, factor = rampdown_type.split('_')[1:]
                 distance, factor = int(distance), float(factor)
                 steps = epoch // distance
-                lr = lr*(factor**steps)
+                lr *= factor ** steps
                 lr = max(lr, min_lr)
             elif rampdown_type == 'linear':
                 e = epoch - rampdown_start
@@ -934,7 +952,8 @@ def get_optimizer(parameters, beta1, beta2, eps, weight_decay, amsgrad, adamw):
 
 
 @audio_retrieval.capture
-def get_trainer(wandb_logger, max_epochs, max_samples_per_epoch, gpus, half_precision, accelerator, enable_checkpointing, fast_dev_run, accumulate_grad_batches,
+def get_trainer(wandb_logger, max_epochs, max_samples_per_epoch, gpus, half_precision, accelerator,
+                enable_checkpointing, fast_dev_run, accumulate_grad_batches,
                 gradient_clip_val, strategy, num_nodes, _config):
     if max_samples_per_epoch is None:
         max_steps_per_epoch = 0
@@ -942,11 +961,11 @@ def get_trainer(wandb_logger, max_epochs, max_samples_per_epoch, gpus, half_prec
         max_steps_per_epoch = max_samples_per_epoch // _config['data_loader']['batch_size']
     kwargs = {}
     if fast_dev_run:
-       if max_steps_per_epoch == 0:
-           print('Using fast_dev_run with max_epochs=5')
-           max_steps_per_epoch = 5
-       else:
-           raise ValueError('Cannot use fast_dev_run with max_samples_per_epoch')
+        if max_steps_per_epoch == 0:
+            print('Using fast_dev_run with max_epochs=5')
+            max_steps_per_epoch = 5
+        else:
+            raise ValueError('Cannot use fast_dev_run with max_samples_per_epoch')
     return pl.Trainer(
         devices=gpus,
         num_nodes=num_nodes,
@@ -968,18 +987,20 @@ def get_trainer(wandb_logger, max_epochs, max_samples_per_epoch, gpus, half_prec
         **kwargs
     )
 
+
 @audio_retrieval.capture
 def get_callbacks(wandb_logger, monitor, enable_checkpointing):
     callbacks = []
 
     if wandb_logger == False or wandb_logger is None:
-         print('No logger; skipping checkpoints')
+        print('No logger; skipping checkpoints')
     else:
         callbacks.append(LearningRateMonitor(logging_interval='epoch'))
 
     if enable_checkpointing:
         monitor = f'val/{monitor}'
-        experiment_name = 'none' if wandb_logger is None or callable(wandb_logger.experiment.name) else wandb_logger.experiment.name
+        experiment_name = 'none' if wandb_logger is None or callable(
+            wandb_logger.experiment.name) else wandb_logger.experiment.name
         save_dir = os.path.join(get_model_dir(), experiment_name)
         os.makedirs(save_dir, exist_ok=True)
 
@@ -1002,9 +1023,9 @@ def get_callbacks(wandb_logger, monitor, enable_checkpointing):
 @audio_retrieval.command
 def print_lr(max_epochs):
     import matplotlib.pyplot as plt
-    import numpy as np
 
-    lrs = [update_lr(torch.optim.Adam(torch.nn.Linear(1,1).parameters()), x) for x in np.linspace(0, max_epochs, 10000)]
+    lrs = [update_lr(torch.optim.Adam(torch.nn.Linear(1, 1).parameters()), x)
+           for x in np.linspace(0, max_epochs, 10000)]
 
     plt.plot(np.linspace(0, max_epochs, 10000), lrs)
     plt.show()
@@ -1029,14 +1050,13 @@ def cmd_generate_embeddings(model=None, load_parameters=None, train_on=None):
     sentence_embeddings = {}
     l = len(get_dataset_dir().split(os.path.sep))
     from tqdm import tqdm
-    with torch.no_grad():
-        with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=True):
-            for b in tqdm(dl, total=len(dl)):
-                a, s, am, sm = model(b)
-                for i, p in enumerate(b['path']):
-                    p = os.path.sep.join(p.split(os.path.sep)[l:]) # remove dataset dir
-                    audio_embeddings[p] = copy.deepcopy(a[i, 0].detach().cpu())
-                    sentence_embeddings[b['caption'][i]] = copy.deepcopy(s[i, 0].detach().cpu().clone())
+    with torch.no_grad(), torch.autocast(device_type='cuda', dtype=torch.float16, enabled=True):
+        for b in tqdm(dl, total=len(dl)):
+            a, s, am, sm = model(b)
+            for i, p in enumerate(b['path']):
+                p = os.path.sep.join(p.split(os.path.sep)[l:])  # remove dataset dir
+                audio_embeddings[p] = copy.deepcopy(a[i, 0].detach().cpu())
+                sentence_embeddings[b['caption'][i]] = copy.deepcopy(s[i, 0].detach().cpu().clone())
 
     out_path = os.path.join(get_model_dir(), load_parameters)
 
@@ -1071,7 +1091,7 @@ def multiprocessing_run(rank, word_size, pernode=None):
 
     os.environ['NODE_RANK'] = str(rank)
     os.environ['CUDA_VISIBLE_DEVICES'] = os.environ['CUDA_VISIBLE_DEVICES'].split(",")[
-        rank%pernode]
+        rank % pernode]
     print("Sat os.environ['CUDA_VISIBLE_DEVICES']=", os.environ['CUDA_VISIBLE_DEVICES'])
     # torch.cuda.set_device(int(os.environ['CUDA_VISIBLE_DEVICES'].split(",")[
     #     rank]))
@@ -1083,7 +1103,7 @@ def multiprocessing_run(rank, word_size, pernode=None):
         argv = argv + ["with"]
 
     argv = argv + \
-        [f"num_nodes={word_size}", f"strategy=ddp"]
+           [f"num_nodes={word_size}", f"strategy=ddp"]
     print(argv)
 
     @audio_retrieval.main
@@ -1092,17 +1112,18 @@ def multiprocessing_run(rank, word_size, pernode=None):
 
     audio_retrieval.run_commandline(argv)
 
+
 class PositionalEncoding(torch.nn.Module):
 
-    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 500, posencode_init=0.04, project=False, project_bias=True, pe_requires_grad=True, weight=1.0):
+    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 500, posencode_init=0.04, project=False,
+                 project_bias=True, pe_requires_grad=True, weight=1.0):
         super().__init__()
         self.dropout = torch.nn.Dropout(p=dropout)
         self.max_len = max_len
         self.posencode_init = posencode_init
-        reweight_only=False
+        reweight_only = False
 
         if posencode_init == 'sinosoidal':
-
             pe = torch.zeros(max_len, d_model)
             position = torch.arange(0, max_len).unsqueeze(1)
             div_term = torch.exp((torch.arange(0, d_model, 2, dtype=torch.float) *
@@ -1113,8 +1134,7 @@ class PositionalEncoding(torch.nn.Module):
             from models.audio.passt import get_passt
             import torch.nn.functional as F
             passt = get_passt('passt')
-            pe = passt[0].model.time_new_pos_embed[0,:,0,:].permute(1,0)
-
+            pe = passt[0].model.time_new_pos_embed[0, :, 0, :].permute(1, 0)
             posemb_grid = pe.permute(1, 0)[None, :, :, None]
             posemb_grid = F.interpolate(posemb_grid, size=(max_len, 1), mode='bicubic', align_corners=False)
             pe = posemb_grid[0, :, :, 0].permute(1, 0)
@@ -1125,8 +1145,8 @@ class PositionalEncoding(torch.nn.Module):
                                   -(math.log(10000.0) / d_model)))
             pe[:, 0::2] = torch.sin(position.float() * div_term)
             pe[:, 1::2] = torch.cos(position.float() * div_term)
-            pe_requires_grad=False
-            reweight_only=True
+            pe_requires_grad = False
+            reweight_only = True
         else:
             pe = torch.randn((max_len, d_model)) * posencode_init
 
@@ -1141,7 +1161,6 @@ class PositionalEncoding(torch.nn.Module):
             pe[None, :, :],
             requires_grad=pe_requires_grad
         )
-
 
     def forward(self, x):
         """
@@ -1182,6 +1201,7 @@ if __name__ == '__main__':
 
     if word_size:
         import random
+
         if "SLURM_NTASKS" in os.environ:
             del os.environ["SLURM_NTASKS"]
         if "SLURM_JOB_NAME" in os.environ:
@@ -1207,10 +1227,6 @@ if __name__ == '__main__':
 print("__main__ is running pid", os.getpid(), "in module main: ", __name__)
 
 
-
-
 @audio_retrieval.automain
 def main():
     return run_one()
-
-
