@@ -26,6 +26,7 @@ from data.datasets.audioset import audioset
 from data.datasets.clotho_v2 import clotho_v2, get_clotho_v2
 from data.datasets.dataset_base_classes import ConcatDataset
 from data.datasets.wavcaps import wavcaps, get_wavecaps
+from models.vic_reg_loss import VICRegLoss
 from utils.directories import directories, get_model_dir, get_dataset_dir
 
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
@@ -101,6 +102,7 @@ def default_config():
     }
 
     # loss function
+    vic_reg_loss = True
     initial_tau = 0.05
     freeze_tau = True
     shared_representation_size = 1024
@@ -410,6 +412,8 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
 
         self.l = len(get_dataset_dir().split(os.path.sep))
 
+        self.vic_reg_loss = VICRegLoss(sim_coeff=100, std_coeff=25, cov_coeff=1)
+
     def forward_audio(self, batch, y=None, y_mask=None):
 
         batch['audio'] = batch['audio'].to(self.device)
@@ -581,7 +585,19 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         ### forward audio features
         batch = self.forward_sentence(batch)
 
-        return (batch['audio_features'], batch['sentence_features'],
+        audio_features = batch['audio_features']
+        sentence_features = batch['sentence_features']
+
+        if self.distributed_mode:
+            audio_features = self.all_gather(audio_features, sync_grads=True).reshape(-1, audio_features.shape[1],
+                                                                                      audio_features.shape[-1])
+            sentence_features = self.all_gather(sentence_features, sync_grads=True).reshape(-1, sentence_features[1],
+                                                                                            sentence_features.shape[-1])
+
+        assert len(audio_features) == len(sentence_features),\
+            f"Captions: {len(batch['caption'])}, Audios: {len(batch['audio'])}, Audio Features Shape: {audio_features.shape} Sentence Features Shape: {sentence_features.shape}"
+
+        return (audio_features, sentence_features,
                 batch['audio_features_mask'], batch['sentence_features_mask'])
 
     def rank_sequences(self, audio_features, audio_mask, sentence_features, sentence_mask, batch_idx=0, batch=None):
@@ -597,28 +613,17 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         self.update_scalars(batch_idx)
 
         audio_features, sentence_features, audio_mask, sentence_mask = self(batch)
-        paths = np.array([hash(p) for p in batch['path']])
-
-        if self.distributed_mode:
-            paths_all = self.all_gather(paths).reshape(-1)
-        else:
-            paths_all = torch.tensor(paths, device=self.device)
-
-        I = (paths_all.unsqueeze(0) == paths_all.unsqueeze(1))
-
-        if self.distributed_mode:
-            audio_features = self.all_gather(audio_features, sync_grads=True).reshape(-1, audio_features.shape[1],
-                                                                                      audio_features.shape[-1])
-            sentence_features = self.all_gather(sentence_features, sync_grads=True).reshape(-1, sentence_features[1],
-                                                                                            sentence_features.shape[-1])
-
-        assert len(audio_features) == len(sentence_features),\
-            f"Captions: {len(batch['caption'])}, Audios: {len(batch['audio'])}, Audio Features Shape: {audio_features.shape} Sentence Features Shape: {sentence_features.shape}"
 
         if self.first:
             print("Audio Features Shape:", audio_features.shape)
             print("Sentence Features Shape:", sentence_features.shape)
             self.first = False
+
+        if self.kwargs['vic_reg_loss']:
+            loss = self.vic_reg_loss(audio_features.squeeze(1), sentence_features.squeeze(1))
+            self.log("train/loss", loss, batch_size=len(audio_features), sync_dist=True)
+            loss *= self.kwargs['loss_weight']
+            return loss
 
         C = self.rank_sequences(audio_features, audio_mask, sentence_features, sentence_mask, batch=batch)
         C /= torch.abs(self.tau)
@@ -631,6 +636,15 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
             assert C_audio.shape[0] == C_audio.shape[1],\
                 f'Audio Features Shape: {C_audio.shape} Sentence Features Shape: {C_text.shape}'
             assert C_text.shape[0] == C_text.shape[1]
+
+            paths = np.array([hash(p) for p in batch['path']])
+
+            if self.distributed_mode:
+                paths = self.all_gather(paths).reshape(-1)
+            else:
+                paths = torch.tensor(paths, device=self.device)
+
+            I = (paths.unsqueeze(0) == paths.unsqueeze(1))
 
             loss = -0.5 * (C_audio[I].mean() + C_text[I].mean())
 
@@ -663,18 +677,19 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
 
         return loss + distill_loss
 
+    @torch.no_grad()
     def validation_step(self, batch, batch_idx, dl_index=0, mode='val'):
 
         if dl_index == 1 and mode == 'val':
             mode = 'test'
-        with torch.no_grad():
-            audio_features, sentence_features, audio_mask, sentence_mask = self(batch)
+
+        audio_features, sentence_features, audio_mask, sentence_mask = self(batch)
 
         args = {
-            'audio_features': copy.deepcopy(audio_features[:, :2].detach()),
-            'audio_mask': copy.deepcopy(audio_mask[:, :2].detach()),
-            'sentence_features': copy.deepcopy(sentence_features[:, :1].detach()),
-            'sentence_mask': copy.deepcopy(sentence_mask[:, :1].detach()),
+            'audio_features': audio_features[:, :2],
+            'audio_mask': audio_mask[:, :2],
+            'sentence_features': sentence_features[:, :1],
+            'sentence_mask': sentence_mask[:, :1],
             'keywords': batch['keywords'],
             'caption': batch['caption'],
             'path': batch['path'],
@@ -687,40 +702,45 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
             args = [args]
         mode = args[0]['mode']
         paths = np.array(list(itertools.chain(*[batch['path'] for batch in args])))
+        if self.distributed_mode:
+            paths = self.all_gather(paths).reshape(-1)
         captions = list(itertools.chain(*[batch['caption'] for batch in args]))
         keywords = list(itertools.chain(*[batch['keywords'] for batch in args]))
         html = list(itertools.chain(*[batch['html'] for batch in args]))
 
-        I = torch.tensor(paths[:, None] == paths[None, :], dtype=torch.bool, device=self.device)
         args = {k: torch.cat([batch[k] for batch in args], dim=0) for k in args[0] if
                 k in ['audio_features', 'sentence_features', 'audio_mask', 'sentence_mask', 'idx']}
 
         audio_features = args['audio_features']
         sentence_features = args['sentence_features']
-        audio_mask = args['audio_mask']
-        sentence_mask = args['sentence_mask']
 
-        with torch.amp.autocast('cuda', enabled=True):
+        if self.kwargs['vic_reg_loss']:
+            loss = self.vic_reg_loss(audio_features.squeeze(1), sentence_features.squeeze(1))
+            self.log(f"{mode}/loss", loss, batch_size=len(audio_features), add_dataloader_idx=False, sync_dist=True)
+        else:
+            audio_mask = args['audio_mask']
+            sentence_mask = args['sentence_mask']
+
             C = self.rank_sequences(audio_features, audio_mask, sentence_features, sentence_mask)
+            C_ = C / torch.abs(self.tau)
 
-        C_ = C / torch.abs(self.tau)
+            C_audio = torch.log_softmax(C, dim=0)
+            C_text = torch.log_softmax(C, dim=1)
 
-        C_audio = torch.log_softmax(C, dim=0)
-        C_text = torch.log_softmax(C, dim=1)
+            C_audio_ = torch.log_softmax(C_, dim=0)
+            C_text_ = torch.log_softmax(C_, dim=1)
 
-        C_audio_ = torch.log_softmax(C_, dim=0)
-        C_text_ = torch.log_softmax(C_, dim=1)
+            assert C_audio.shape[0] == C_audio.shape[1],\
+                f'Audio Features Shape: {audio_features.shape} Sentence Features Shape: {sentence_features.shape}'
+            assert C_text.shape[0] == C_text.shape[1]
 
-        assert C_audio.shape[0] == C_audio.shape[1],\
-            f'Audio Features Shape: {audio_features.shape} Sentence Features Shape: {sentence_features.shape}'
-        assert C_text.shape[0] == C_text.shape[1]
+            I = torch.tensor(paths[:, None] == paths[None, :], dtype=torch.bool, device=self.device)
 
-        # mode = kwargs.get('mode', 'val')
-        loss = -0.5 * (C_audio[I].mean() + C_text[I].mean())
-        loss_ = -0.5 * (C_audio_[I].mean() + C_text_[I].mean())
-        self.log(f"{mode}/loss", loss.item(), batch_size=len(audio_features), add_dataloader_idx=False, sync_dist=True)
-        self.log(f"{mode}/loss_tau", loss_.item(), batch_size=len(audio_features), add_dataloader_idx=False,
-                 sync_dist=True)
+            loss = -0.5 * (C_audio[I].mean() + C_text[I].mean())
+            loss_ = -0.5 * (C_audio_[I].mean() + C_text_[I].mean())
+            self.log(f"{mode}/loss", loss.item(), batch_size=len(audio_features), add_dataloader_idx=False, sync_dist=True)
+            self.log(f"{mode}/loss_tau", loss_.item(), batch_size=len(audio_features), add_dataloader_idx=False,
+                     sync_dist=True)
         args['path'] = paths
         args['caption'] = captions
         args['keywords'] = keywords
@@ -797,27 +817,25 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         all_audio_features = torch.concatenate([audio_features[::n_captions]])
         all_audio_masks = torch.concatenate([audio_mask[::n_captions]])
         for i in range(len(all_audio_features)):
-            with torch.amp.autocast('cuda', enabled=True):
-                C_ = self.rank_sequences(
-                    all_audio_features[i:i + 1],
-                    all_audio_masks[i:i + 1],
-                    sentence_features[:],
-                    sentence_mask[:]
-                )
+            C_ = self.rank_sequences(
+                all_audio_features[i:i + 1],
+                all_audio_masks[i:i + 1],
+                sentence_features[:],
+                sentence_mask[:]
+            )
             C[:, i:i + 1] = C_.T
 
         if self.trainer.is_global_zero and self.store_predictions:
-            print(self.logger)
             experiment_name = self.experiment_name if not self.logger else self.logger.experiment.name
             path = os.path.join(get_model_dir(), experiment_name)
-            print("\nSaving predictions to ", path)
+            print("Saving predictions to", path)
             os.makedirs(path, exist_ok=True)
             torch.save(C.cpu(), os.path.join(path, f"predictions_{mode}_{self.current_epoch}.pt"))
             torch.save(sentence_features.cpu(), os.path.join(path, f"sentence_embeddings_{mode}.pt"))
             torch.save(audio_features.cpu(), os.path.join(path, f"audio_embeddings_{mode}.pt"))
             np.save(os.path.join(path, f"paths_{mode}"), paths)
             np.save(os.path.join(path, f"captions_{mode}"), captions)
-            print("\nSaving done!\n to ", path)
+            print("Saving done to", path)
 
         if self.kwargs['use_captions']:
             rows = []

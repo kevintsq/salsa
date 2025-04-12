@@ -99,7 +99,7 @@ class LoadAudios:
                 shutil.copyfile(file_path, tmp_hdf_path)
             else:
                 print(f"HDF5 already in /dev/shm: {tmp_hdf_path}")
-                self.__dataset_file__ = tmp_hdf_path
+            self.__dataset_file__ = tmp_hdf_path
         elif 'SLURM_TMPDIR' in os.environ and os.path.exists(os.environ['SLURM_TMPDIR']):
             tmp_hdf_path = os.path.join(os.environ['SLURM_TMPDIR'], os.path.basename(file_path))
             if not os.path.exists(tmp_hdf_path):
