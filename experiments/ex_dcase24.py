@@ -140,7 +140,7 @@ def default_config():
     strategy = 'auto' if gpus == 1 else DDPStrategy(find_unused_parameters=True)
     monitor = 'mAP@10'
     enable_checkpointing = True
-    compiled = True
+    compiled = False
 
     num_nodes = 1
 
@@ -683,12 +683,12 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         if type(args) is not tuple:
             args = [args]
         mode = args[0]['mode']
-        paths = list(itertools.chain(*[batch['path'] for batch in args]))
+        paths = np.array(list(itertools.chain(*[batch['path'] for batch in args])))
         captions = list(itertools.chain(*[batch['caption'] for batch in args]))
         keywords = list(itertools.chain(*[batch['keywords'] for batch in args]))
         html = list(itertools.chain(*[batch['html'] for batch in args]))
 
-        I = torch.from_numpy((np.array(paths)[:, None] == np.array(paths)[None, :])).type(torch.bool)
+        I = torch.tensor(paths[:, None] == paths[None, :], dtype=torch.bool, device=self.device)
         args = {k: torch.cat([batch[k] for batch in args], dim=0) for k in args[0] if
                 k in ['audio_features', 'sentence_features', 'audio_mask', 'sentence_mask', 'idx']}
 
@@ -697,7 +697,7 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         audio_mask = args['audio_mask']
         sentence_mask = args['sentence_mask']
 
-        with torch.cuda.amp.autocast(enabled=True):
+        with torch.amp.autocast('cuda', enabled=True):
             C = self.rank_sequences(audio_features, audio_mask, sentence_features, sentence_mask)
 
         C_ = C / torch.abs(self.tau)
@@ -713,8 +713,8 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         assert C_text.shape[0] == C_text.shape[1]
 
         # mode = kwargs.get('mode', 'val')
-        loss = -0.5 * (C_audio[torch.where(I)].mean() + C_text[torch.where(I)].mean())
-        loss_ = -0.5 * (C_audio_[torch.where(I)].mean() + C_text_[torch.where(I)].mean())
+        loss = -0.5 * (C_audio[I].mean() + C_text[I].mean())
+        loss_ = -0.5 * (C_audio_[I].mean() + C_text_[I].mean())
         self.log(f"{mode}/loss", loss.item(), batch_size=len(audio_features), add_dataloader_idx=False, sync_dist=True)
         self.log(f"{mode}/loss_tau", loss_.item(), batch_size=len(audio_features), add_dataloader_idx=False,
                  sync_dist=True)

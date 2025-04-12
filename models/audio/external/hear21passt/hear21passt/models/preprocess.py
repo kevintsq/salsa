@@ -1,15 +1,9 @@
+import torch
 import torch.nn as nn
 import torchaudio
-from torch.nn.functional import conv1d, conv2d
-
-import torch
-
-
 
 sz_float = 4  # size of a float
 epsilon = 10e-8  # fudge factor for normalization
-
-
 
 
 class AugmentMelSTFT(nn.Module):
@@ -49,13 +43,12 @@ class AugmentMelSTFT(nn.Module):
         else:
             self.timem = torchaudio.transforms.TimeMasking(timem, iid_masks=True)
 
-
     def forward(self, x, **kwargs):
 
         x = nn.functional.conv1d(x.unsqueeze(1), self.preemphasis_coefficient).squeeze(1)
         x = torch.stft(x, self.n_fft, hop_length=self.hopsize, win_length=self.win_length,
                        center=True, normalized=False, window=self.window, return_complex=False)
-        x = (x ** 2).sum(dim=-1)  # power mag
+        x = x.square_().sum(dim=-1)  # power mag
         fmin = self.fmin + torch.randint(self.fmin_aug_range, (1,)).item()
         fmax = self.fmax + self.fmax_aug_range // 2 - torch.randint(self.fmax_aug_range, (1,)).item()
         # don't augment eval data
@@ -63,15 +56,15 @@ class AugmentMelSTFT(nn.Module):
             fmin = self.fmin
             fmax = self.fmax
 
-
-        mel_basis, _ = torchaudio.compliance.kaldi.get_mel_banks(self.n_mels,  self.n_fft, self.sr,
-                                        fmin, fmax, vtln_low=100.0, vtln_high=-500., vtln_warp_factor=1.0)
+        mel_basis, _ = torchaudio.compliance.kaldi.get_mel_banks(self.n_mels, self.n_fft, self.sr,
+                                                                 fmin, fmax, vtln_low=100.0, vtln_high=-500.,
+                                                                 vtln_warp_factor=1.0)
         mel_basis = torch.as_tensor(torch.nn.functional.pad(mel_basis, (0, 1), mode='constant', value=0),
                                     device=x.device)
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.amp.autocast('cuda', enabled=False):
             melspec = torch.matmul(mel_basis, x)
 
-        melspec = (melspec + 0.00001).log()
+        melspec.add_(0.00001).log_()
 
         if self.training:
             if kwargs.get('timem') is not None:
@@ -86,7 +79,7 @@ class AugmentMelSTFT(nn.Module):
             else:
                 melspec = self.freqm(melspec)
 
-        melspec = (melspec + 4.5) / 5.  # fast normalization
+        melspec.add_(4.5).div_(5.)  # fast normalization
 
         return melspec
 
@@ -94,4 +87,3 @@ class AugmentMelSTFT(nn.Module):
         return 'winsize={}, hopsize={}'.format(self.win_length,
                                                self.hopsize
                                                )
-

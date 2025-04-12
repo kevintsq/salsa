@@ -1,11 +1,10 @@
+import urllib.parse
 from functools import partial
 from typing import Any, Callable, List, Optional, Sequence, Tuple, Union
-from torch import nn, Tensor
-import torch.nn.functional as F
-from torchvision.ops.misc import ConvNormActivation
-from torch.hub import load_state_dict_from_url
-import urllib.parse
 
+import torchaudio
+from torch import nn, Tensor
+from torch.hub import load_state_dict_from_url
 
 # Adapted version of MobileNetV3 pytorch implementation
 # https://github.com/pytorch/vision/blob/main/torchvision/models/mobilenetv3.py
@@ -355,7 +354,6 @@ def get_model(num_classes: int = 527, pretrained_name: str = None, width_mult: f
                      head_type=head_type, multihead_attention_heads=multihead_attention_heads,
                      input_dims=input_dims, se_conf=se_conf
                      )
-    print(m)
     return m
 
 
@@ -387,7 +385,7 @@ def cnn_out_size(in_size, padding, dilation, kernel, stride):
     return math.floor(s / stride + 1)
 
 
-def collapse_dim(x: Tensor, dim: int, mode: str = "pool", pool_fn:  Callable[[Tensor, int], Tensor] = torch.mean,
+def collapse_dim(x: Tensor, dim: int, mode: str = "pool", pool_fn: Callable[[Tensor, int], Tensor] = torch.mean,
                  combine_dim: int = None):
     """
     Collapses dimension of multi-dimensional tensor by pooling or combining dimensions
@@ -408,7 +406,7 @@ def collapse_dim(x: Tensor, dim: int, mode: str = "pool", pool_fn:  Callable[[Te
 
 
 class CollapseDim(nn.Module):
-    def __init__(self, dim: int, mode: str = "pool", pool_fn:  Callable[[Tensor, int], Tensor] = torch.mean,
+    def __init__(self, dim: int, mode: str = "pool", pool_fn: Callable[[Tensor, int], Tensor] = torch.mean,
                  combine_dim: int = None):
         super(CollapseDim, self).__init__()
         self.dim = dim
@@ -429,17 +427,17 @@ from torchvision.ops.misc import ConvNormActivation
 
 class ConcurrentSEBlock(torch.nn.Module):
     def __init__(
-        self,
-        c_dim: int,
-        f_dim: int,
-        t_dim: int,
-        se_cnf: Dict
+            self,
+            c_dim: int,
+            f_dim: int,
+            t_dim: int,
+            se_cnf: Dict
     ) -> None:
         super().__init__()
         dims = [c_dim, f_dim, t_dim]
         self.conc_se_layers = nn.ModuleList()
         for d in se_cnf['se_dims']:
-            input_dim = dims[d-1]
+            input_dim = dims[d - 1]
             squeeze_dim = make_divisible(input_dim // se_cnf['se_r'], 8)
             self.conc_se_layers.append(SqueezeExcitation(input_dim, squeeze_dim, d))
         if se_cnf['se_agg'] == "max":
@@ -473,12 +471,12 @@ class SqueezeExcitation(torch.nn.Module):
     """
 
     def __init__(
-        self,
-        input_dim: int,
-        squeeze_dim: int,
-        se_dim: int,
-        activation: Callable[..., torch.nn.Module] = torch.nn.ReLU,
-        scale_activation: Callable[..., torch.nn.Module] = torch.nn.Sigmoid,
+            self,
+            input_dim: int,
+            squeeze_dim: int,
+            se_dim: int,
+            activation: Callable[..., torch.nn.Module] = torch.nn.ReLU,
+            scale_activation: Callable[..., torch.nn.Module] = torch.nn.Sigmoid,
     ) -> None:
         super().__init__()
         self.fc1 = torch.nn.Linear(input_dim, squeeze_dim)
@@ -506,16 +504,16 @@ class SqueezeExcitation(torch.nn.Module):
 class InvertedResidualConfig:
     # Stores information listed at Tables 1 and 2 of the MobileNetV3 paper
     def __init__(
-        self,
-        input_channels: int,
-        kernel: int,
-        expanded_channels: int,
-        out_channels: int,
-        use_se: bool,
-        activation: str,
-        stride: int,
-        dilation: int,
-        width_mult: float,
+            self,
+            input_channels: int,
+            kernel: int,
+            expanded_channels: int,
+            out_channels: int,
+            use_se: bool,
+            activation: str,
+            stride: int,
+            dilation: int,
+            width_mult: float,
     ):
         self.input_channels = self.adjust_channels(input_channels, width_mult)
         self.kernel = kernel
@@ -539,11 +537,11 @@ class InvertedResidualConfig:
 
 class InvertedResidual(nn.Module):
     def __init__(
-        self,
-        cnf: InvertedResidualConfig,
-        se_cnf: Dict,
-        norm_layer: Callable[..., nn.Module],
-        depthwise_norm_layer: Callable[..., nn.Module]
+            self,
+            cnf: InvertedResidualConfig,
+            se_cnf: Dict,
+            norm_layer: Callable[..., nn.Module],
+            depthwise_norm_layer: Callable[..., nn.Module]
     ):
         super().__init__()
         if not (1 <= cnf.stride <= 2):
@@ -600,7 +598,7 @@ class InvertedResidual(nn.Module):
             result += inp
         return result
 
-import torch
+
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
@@ -609,6 +607,7 @@ from torch import Tensor
 class MultiHeadAttentionPooling(nn.Module):
     """Multi-Head Attention as used in PSLA paper (https://arxiv.org/pdf/2102.01243.pdf)
     """
+
     def __init__(self, in_dim, out_dim, att_activation: str = 'sigmoid',
                  clf_activation: str = 'ident', num_heads: int = 4, epsilon: float = 1e-7):
         super(MultiHeadAttentionPooling, self).__init__()
@@ -636,6 +635,8 @@ class MultiHeadAttentionPooling(nn.Module):
             return F.softmax(x, dim=1)
         elif activation == 'ident':
             return x
+        else:
+            raise NotImplementedError(f"Activation '{activation}' not implemented")
 
     def forward(self, x) -> Tensor:
         """x: Tensor of size (batch_size, channels, frequency bands, sequence length)
@@ -654,6 +655,7 @@ class MultiHeadAttentionPooling(nn.Module):
         out = torch.sum(att * val, dim=2) * self.head_weight
         out = torch.sum(out, dim=1)
         return out
+
 
 def NAME_TO_WIDTH(name):
     mn_map = {
@@ -695,13 +697,16 @@ import numpy as np
 def exp_warmup_linear_down(warmup, rampdown_length, start_rampdown, last_value):
     rampup = exp_rampup(warmup)
     rampdown = linear_rampdown(rampdown_length, start_rampdown, last_value)
+
     def wrapper(epoch):
         return rampup(epoch) * rampdown(epoch)
+
     return wrapper
 
 
 def exp_rampup(rampup_length):
     """Exponential rampup from https://arxiv.org/abs/1610.02242"""
+
     def wrapper(epoch):
         if epoch < rampup_length:
             epoch = np.clip(epoch, 0.5, rampup_length)
@@ -709,6 +714,7 @@ def exp_rampup(rampup_length):
             return float(np.exp(-5.0 * phase * phase))
         else:
             return 1.0
+
     return wrapper
 
 
@@ -720,10 +726,8 @@ def linear_rampdown(rampdown_length, start=0, last_value=0):
             return last_value + (1. - last_value) * (rampdown_length - epoch + start) / rampdown_length
         else:
             return last_value
+
     return wrapper
-
-
-import torch
 
 
 def mixup(size, alpha):
@@ -758,10 +762,6 @@ def mixstyle(x, p=0.4, alpha=0.4, eps=1e-6, mix_labels=False):
     if mix_labels:
         return x, perm, lmda
     return x
-
-import torch.nn as nn
-import torchaudio
-import torch
 
 
 class AugmentMelSTFT(nn.Module):
@@ -802,7 +802,7 @@ class AugmentMelSTFT(nn.Module):
         x = nn.functional.conv1d(x.unsqueeze(1), self.preemphasis_coefficient).squeeze(1)
         x = torch.stft(x, self.n_fft, hop_length=self.hopsize, win_length=self.win_length,
                        center=True, normalized=False, window=self.window, return_complex=False)
-        x = (x ** 2).sum(dim=-1)  # power mag
+        x = x.square_().sum(dim=-1)  # power mag
         fmin = self.fmin + torch.randint(self.fmin_aug_range, (1,)).item()
         fmax = self.fmax + self.fmax_aug_range // 2 - torch.randint(self.fmax_aug_range, (1,)).item()
         # don't augment eval data
@@ -810,19 +810,20 @@ class AugmentMelSTFT(nn.Module):
             fmin = self.fmin
             fmax = self.fmax
 
-        mel_basis, _ = torchaudio.compliance.kaldi.get_mel_banks(self.n_mels,  self.n_fft, self.sr,
-                                        fmin, fmax, vtln_low=100.0, vtln_high=-500., vtln_warp_factor=1.0)
+        mel_basis, _ = torchaudio.compliance.kaldi.get_mel_banks(self.n_mels, self.n_fft, self.sr,
+                                                                 fmin, fmax, vtln_low=100.0, vtln_high=-500.,
+                                                                 vtln_warp_factor=1.0)
         mel_basis = torch.as_tensor(torch.nn.functional.pad(mel_basis, (0, 1), mode='constant', value=0),
                                     device=x.device)
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.amp.autocast('cuda', enabled=False):
             melspec = torch.matmul(mel_basis, x)
 
-        melspec = (melspec + 0.00001).log()
+        melspec.add_(0.00001).log_()
 
         if self.training:
             melspec = self.freqm(melspec)
             melspec = self.timem(melspec)
 
-        melspec = (melspec + 4.5) / 5.  # fast normalization
+        melspec.add_(4.5).div_(5.)  # fast normalization
 
         return melspec
