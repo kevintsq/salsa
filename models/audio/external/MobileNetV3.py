@@ -1,3 +1,4 @@
+import random
 import urllib.parse
 from functools import partial
 from typing import Any, Callable, List, Optional, Sequence, Tuple, Union
@@ -764,6 +765,16 @@ def mixstyle(x, p=0.4, alpha=0.4, eps=1e-6, mix_labels=False):
     return x
 
 
+@torch._dynamo.disable()
+def get_mel_banks_safe(*args, **kwargs):
+    return torchaudio.compliance.kaldi.get_mel_banks(*args, **kwargs)
+
+
+@torch._dynamo.disable()
+def stft(*args, **kwargs):
+    return torch.stft(*args, **kwargs)
+
+
 class AugmentMelSTFT(nn.Module):
     def __init__(self, n_mels=128, sr=32000, win_length=800, hopsize=320, n_fft=1024, freqm=48, timem=192,
                  fmin=0.0, fmax=None, fmin_aug_range=10, fmax_aug_range=2000):
@@ -799,31 +810,50 @@ class AugmentMelSTFT(nn.Module):
             self.timem = torchaudio.transforms.TimeMasking(timem, iid_masks=True)
 
     def forward(self, x):
+        # Step 1: pre-emphasis
         x = nn.functional.conv1d(x.unsqueeze(1), self.preemphasis_coefficient).squeeze(1)
-        x = torch.stft(x, self.n_fft, hop_length=self.hopsize, win_length=self.win_length,
-                       center=True, normalized=False, window=self.window, return_complex=False)
+        x = stft(x, self.n_fft, hop_length=self.hopsize, win_length=self.win_length,
+                 center=True, normalized=False, window=self.window, return_complex=False)
         x = x.square_().sum(dim=-1)  # power mag
-        fmin = self.fmin + torch.randint(self.fmin_aug_range, (1,)).item()
-        fmax = self.fmax + self.fmax_aug_range // 2 - torch.randint(self.fmax_aug_range, (1,)).item()
-        # don't augment eval data
-        if not self.training:
+
+        # Step 2: dynamic fmin/fmax augmentation
+        if self.training:
+            fmin = self.fmin + random.randint(0, self.fmin_aug_range - 1)
+            fmax = self.fmax + self.fmax_aug_range // 2 - random.randint(0, self.fmax_aug_range - 1)
+        else:
             fmin = self.fmin
             fmax = self.fmax
 
-        mel_basis, _ = torchaudio.compliance.kaldi.get_mel_banks(self.n_mels, self.n_fft, self.sr,
-                                                                 fmin, fmax, vtln_low=100.0, vtln_high=-500.,
-                                                                 vtln_warp_factor=1.0)
-        mel_basis = torch.as_tensor(torch.nn.functional.pad(mel_basis, (0, 1), mode='constant', value=0),
-                                    device=x.device)
+        # Step 3: mel spectrogram
+        # mel_transform = torchaudio.transforms.MelSpectrogram(
+        #     sample_rate=self.sr,
+        #     n_fft=self.n_fft,
+        #     hop_length=self.hopsize,
+        #     win_length=self.win_length,
+        #     window_fn=torch.hann_window,
+        #     n_mels=self.n_mels,
+        #     f_min=fmin,
+        #     f_max=fmax,
+        #     power=2.0,
+        #     normalized=False,
+        # ).to(x.device)
+
+        mel_basis, _ = get_mel_banks_safe(self.n_mels, self.n_fft, self.sr, fmin, fmax,
+                                          vtln_low=100.0, vtln_high=-500., vtln_warp_factor=1.0)
+        mel_basis = torch.nn.functional.pad(mel_basis.cuda(), (0, 1), mode='constant', value=0)
         with torch.amp.autocast('cuda', enabled=False):
+            # melspec = mel_transform(x)
             melspec = torch.matmul(mel_basis, x)
 
-        melspec.add_(0.00001).log_()
+        # Step 4: log scaling
+        melspec.add_(1e-5).log_()
 
+        # Step 5: augmentation
         if self.training:
             melspec = self.freqm(melspec)
             melspec = self.timem(melspec)
 
-        melspec.add_(4.5).div_(5.)  # fast normalization
+        # Step 6: normalization
+        melspec.add_(4.5).div_(5.)
 
         return melspec

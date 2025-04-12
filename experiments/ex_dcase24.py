@@ -140,7 +140,6 @@ def default_config():
     strategy = 'auto' if gpus == 1 else DDPStrategy(find_unused_parameters=True)
     monitor = 'mAP@10'
     enable_checkpointing = True
-    compiled = False
 
     num_nodes = 1
 
@@ -279,8 +278,6 @@ def get_model(load_parameters, _config):
         missing_keys = ac.load_state_dict(ac_.state_dict())
         print(missing_keys)
 
-    if _config['compiled']:
-        ac = torch.compile(ac)  # , mode='reduce-overhead', fullgraph=True
     return ac
 
 
@@ -424,13 +421,19 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
             batch['audio_features'] = self.audio_embedding_model(batch['audio'], audio_length=batch['audio_length'])
             batch['audio_features'] = batch['audio_features'].mean(1)  # average over frequency dimension
 
-        audio_mask = []
-        for i, f in enumerate(batch['audio_features']):
-            m = torch.zeros(f.shape[0])
-            m[:math.ceil((batch['audio_length'][i].item() * f.shape[0]))] = 1
-            audio_mask.append(m)
+        T = batch['audio_features'][0].shape[0]
+        audio_lengths = (batch['audio_length'] * T).ceil_().long()
 
-        batch['audio_features_mask'] = torch.stack(audio_mask).to(self.device)
+        audio_mask = torch.arange(T, device=self.device).unsqueeze(0) < audio_lengths.unsqueeze(1)
+        batch['audio_features_mask'] = audio_mask.float()
+
+        # audio_mask = []
+        # for i, f in enumerate(batch['audio_features']):
+        #     m = torch.zeros(f.shape[0], device=self.device)
+        #     m[:torch.ceil((batch['audio_length'][i] * f.shape[0]))] = 1
+        #     audio_mask.append(m)
+        #
+        # batch['audio_features_mask'] = torch.stack(audio_mask)
 
         audio_features = batch['audio_features']
         audio_features_mask = batch['audio_features_mask']
@@ -448,7 +451,7 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
                 audio_features = torch.nn.functional.normalize(audio_features, p=2, dim=-1)
 
             audio_token = self.audio_token.expand(len(audio_features), -1, -1)
-            audio_token_mask = torch.ones(len(audio_features_mask), 1).to(self.device)
+            audio_token_mask = torch.ones(len(audio_features_mask), 1, device=self.device)
 
             if self.kwargs['init_audio_token_with_mean']:
                 audio_token = audio_token + audio_features.mean(1)[:, None, :]
@@ -599,7 +602,7 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         if self.distributed_mode:
             paths_all = self.all_gather(paths).reshape(-1)
         else:
-            paths_all = torch.tensor(paths)
+            paths_all = torch.tensor(paths, device=self.device)
 
         I = (paths_all.unsqueeze(0) == paths_all.unsqueeze(1))
 
@@ -629,7 +632,7 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
                 f'Audio Features Shape: {C_audio.shape} Sentence Features Shape: {C_text.shape}'
             assert C_text.shape[0] == C_text.shape[1]
 
-            loss = -0.5 * (C_audio[torch.where(I)].mean() + C_text[torch.where(I)].mean())
+            loss = -0.5 * (C_audio[I].mean() + C_text[I].mean())
 
             self.log("train/loss", loss, batch_size=len(audio_features), sync_dist=True)
             self.log('train/tau', torch.abs(self.tau), sync_dist=True)
@@ -1015,7 +1018,7 @@ def get_callbacks(wandb_logger, monitor, enable_checkpointing):
                 every_n_epochs=enable_checkpointing,
                 save_last=True,
                 auto_insert_metric_name=False,
-                filename='epoch_{epoch}-{' + f'{monitor}' + '}'
+                filename=f'epoch_{monitor}'
             )
         )
 
@@ -1092,20 +1095,17 @@ def multiprocessing_run(rank, word_size, pernode=None):
     print("Tasks per node = ", pernode)
 
     os.environ['NODE_RANK'] = str(rank)
-    os.environ['CUDA_VISIBLE_DEVICES'] = os.environ['CUDA_VISIBLE_DEVICES'].split(",")[
-        rank % pernode]
+    os.environ['CUDA_VISIBLE_DEVICES'] = os.environ['CUDA_VISIBLE_DEVICES'].split(",")[rank % pernode]
     print("Sat os.environ['CUDA_VISIBLE_DEVICES']=", os.environ['CUDA_VISIBLE_DEVICES'])
-    # torch.cuda.set_device(int(os.environ['CUDA_VISIBLE_DEVICES'].split(",")[
-    #     rank]))
+    # torch.cuda.set_device(int(os.environ['CUDA_VISIBLE_DEVICES'].split(",")[rank]))
     argv = sys.argv
     if rank != 0:
         print(f"Unobserved {os.getpid()} with rank {rank}")
-        argv = argv + ["-u"]  # only rank 0 is observed
+        argv += ["-u"]  # only rank 0 is observed
     if "with" not in argv:
-        argv = argv + ["with"]
+        argv += ["with"]
 
-    argv = argv + \
-           [f"num_nodes={word_size}", f"strategy=ddp"]
+    argv += [f"num_nodes={word_size}", f"strategy=ddp"]
     print(argv)
 
     @audio_retrieval.main

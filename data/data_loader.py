@@ -22,13 +22,13 @@ def get_train_data_loader(data_set, batch_size, n_workers, queue_random_sampling
                           shuffle=True):
     if targets is None:
         return DataLoader(data_set, batch_size=batch_size, num_workers=n_workers, shuffle=shuffle,
-                          collate_fn=collate_fun, drop_last=True)
+                          collate_fn=collate_fun, drop_last=True, pin_memory=True, persistent_workers=True, pin_memory_device="cuda")
     else:
         if queue_random_sampling:
             sampler = CustomQueueRandomSampler(targets=targets)
         else:
             sampler = CustomWeightedRandomSampler(targets=targets, replacement=False)
-        return DataLoader(data_set, batch_size=batch_size, num_workers=n_workers, sampler=sampler)
+        return DataLoader(data_set, batch_size=batch_size, num_workers=n_workers, sampler=sampler, pin_memory=True, persistent_workers=True, pin_memory_device="cuda")
 
 
 @data_loader.capture
@@ -38,10 +38,10 @@ def get_eval_data_loader(data_set, batch_size_eval, n_workers, collate_fun=None,
         num_replicas = int(os.environ['WORLD_SIZE'])
         rank = int(os.environ['NODE_RANK'])
         sampler = torch.utils.data.DistributedSampler(data_set, shuffle=shuffle, num_replicas=num_replicas, rank=rank)
-        return DataLoader(data_set, batch_size=batch_size_eval, num_workers=n_workers, sampler=sampler
-                          , collate_fn=collate_fun)
+        return DataLoader(data_set, batch_size=batch_size_eval, num_workers=n_workers, sampler=sampler,
+                          collate_fn=collate_fun, pin_memory=True, persistent_workers=True, pin_memory_device="cuda")
     return DataLoader(data_set, batch_size=batch_size_eval, num_workers=n_workers, shuffle=shuffle,
-                      collate_fn=collate_fun)
+                      collate_fn=collate_fun, pin_memory=True, persistent_workers=True, pin_memory_device="cuda")
 
 
 class CustomQueueRandomSampler(Sampler):
