@@ -140,6 +140,7 @@ def default_config():
     strategy = 'auto' if gpus == 1 else DDPStrategy(find_unused_parameters=True)
     monitor = 'mAP@10'
     enable_checkpointing = True
+    compiled = True
 
     num_nodes = 1
 
@@ -278,6 +279,8 @@ def get_model(load_parameters, _config):
         missing_keys = ac.load_state_dict(ac_.state_dict())
         print(missing_keys)
 
+    if _config['compiled']:
+        ac = torch.compile(ac)  # , mode='reduce-overhead', fullgraph=True
     return ac
 
 
@@ -293,7 +296,7 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         self.save_hyperparameters(kwargs)
 
         self.kwargs = kwargs
-        self.distributed_mode = kwargs.get('num_nodes', 1) > 1
+        self.distributed_mode = kwargs.get('num_nodes', 1) > 1 or kwargs.get('num_gpus', 1) > 1
 
         from models.audio.base import get_audio_embedding_model
         self.audio_embedding_model, audio_output_size = get_audio_embedding_model(
@@ -791,7 +794,7 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         all_audio_features = torch.concatenate([audio_features[::n_captions]])
         all_audio_masks = torch.concatenate([audio_mask[::n_captions]])
         for i in range(len(all_audio_features)):
-            with torch.cuda.amp.autocast(enabled=True):
+            with torch.amp.autocast('cuda', enabled=True):
                 C_ = self.rank_sequences(
                     all_audio_features[i:i + 1],
                     all_audio_masks[i:i + 1],
