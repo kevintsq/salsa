@@ -1,22 +1,22 @@
-from sacred import Ingredient
-import os
-import torch
-import numpy as np
 import multiprocessing
-import librosa
-import h5py
-import tqdm
+import os
 import shutil
-import psutil
-import minimp3py
+from typing import List, Dict, Union
 
-from typing import List, NoReturn, Dict, Union
+import h5py
+import librosa
+import minimp3py
+import numpy as np
+import torch
+import tqdm
+from sacred import Ingredient
 
 from utils.directories import directories, get_persistent_cache_dir
 
 audio_dataset = Ingredient('audio_dataset', ingredients=[directories])
 
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
+
 
 @audio_dataset.config
 def config():
@@ -93,8 +93,17 @@ class LoadAudios:
                 for i, s in enumerate(self.__mp3s__):
                     mp3s[i] = self.__mp3s__[i]
 
-        # copy hd5py file to ram
-        self.__dataset_file__ = file_path
+        # copy hd5py file to local drive
+        if 'SLURM_TMPDIR' in os.environ:
+            tmp_hdf_path = os.path.join(os.environ['SLURM_TMPDIR'], os.path.basename(file_path))
+            if not os.path.exists(tmp_hdf_path):
+                print(f"Copying HDF5 file to SLURM_TMPDIR: {tmp_hdf_path}")
+                shutil.copyfile(file_path, tmp_hdf_path)
+            else:
+                print(f"HDF5 already in SLURM_TMPDIR: {tmp_hdf_path}")
+            self.__dataset_file__ = tmp_hdf_path
+        else:
+            self.__dataset_file__ = file_path
         self.__path_file_map__ = {p: i for i, p in enumerate(unique_paths)}
 
         self.__hdf5_file__ = None
@@ -210,13 +219,13 @@ class FixedLengthAudio(LoadAudios):
                 offset = self.__offset__
             else:
                 offset = torch.randint(x.shape[-1] - self.__fixed_length__ + 1, size=(1,)).item()
-            x = x[offset:offset+self.__fixed_length__]
+            x = x[offset:offset + self.__fixed_length__]
 
         return x, audio_length
 
     def __pad__(self, x, length):
         assert len(x) <= length, 'audio sample is longer than the max length'
-        y = np.zeros((self.__fixed_length__,)).astype(np.float32)
+        y = np.zeros((self.__fixed_length__,), dtype=np.float32)
         y[:len(x)] = x
         return y
 
@@ -226,7 +235,6 @@ class DatasetBaseClass(FixedLengthAudio, torch.utils.data.Dataset):
         super().__init__()
 
     def get_subset(self, filter):
-
         q = self.__quick__
 
         self.set_quick(True)
@@ -236,6 +244,7 @@ class DatasetBaseClass(FixedLengthAudio, torch.utils.data.Dataset):
         subset = Subset(self, idx)
         subset.set_quick(q)
         return subset
+
 
 class ConcatDataset(DatasetBaseClass):
 
@@ -345,6 +354,7 @@ class Subset(DatasetBaseClass):
     def __len__(self) -> int:
         return len(self.indices)
 
+
 def decode(array, path, max_length=32):
     """
     decodes an array if uint8 representing an mp3 file
@@ -353,19 +363,19 @@ def decode(array, path, max_length=32):
     # taken from https://github.com/kkoutini/PaSST/blob/main/audioset/prepare_scripts
     try:
         data = array.tobytes()
-        duration, ch, sr =  minimp3py.probe(data)
+        duration, ch, sr = minimp3py.probe(data)
         # if ch != 1:
         #     print(f"Unexpected number of channels {ch} {path}")
-        assert sr == 32000, f"Unexpected sample rate {sr}   {path}"
+        assert sr == 32000, f"Unexpected sample rate {sr} {path}"
 
         max_length = max_length * sr
-        offset=0
+        offset = 0
         if duration > max_length:
             max_offset = max(int(duration - max_length), 0) + 1
             offset = torch.randint(max_offset, (1,)).item()
 
         waveform, _ = minimp3py.read(data, start=offset, length=max_length)
-        waveform = waveform[:,0]
+        waveform = waveform[:, 0]
 
         if waveform.dtype != 'float32':
             raise RuntimeError("Unexpected wave type")
@@ -375,10 +385,9 @@ def decode(array, path, max_length=32):
         raise e
         # print(e)
         # print("Error decompressing: ", path, "Returning empty arrray instead...")
-        waveform = np.zeros((10 * 32000)).astype(np.float32)
+        # waveform = np.zeros((10 * 32000)).astype(np.float32)
 
     return waveform
-
 
 
 def encode(params, codec='mp3'):
@@ -388,7 +397,8 @@ def encode(params, codec='mp3'):
     print(file)
     print(target_file)
     if not os.path.exists(file[:-3] + codec):
-        os.system(f"ffmpeg  -hide_banner -nostats -loglevel error -n -i '{file}' -codec:a {codec} -ar {sr} -ac 1 '{target_file}'")
+        os.system(
+            f"ffmpeg -hide_banner -nostats -loglevel error -n -i '{file}' -codec:a {codec} -ar {sr} -ac 1 '{target_file}'")
         array = np.fromfile(target_file, dtype='uint8')
         os.remove(target_file)
     else:
@@ -419,6 +429,8 @@ if __name__ == '__main__':
     from data.datasets.clotho_v2 import clotho_v2, get_clotho_v2
 
     ex = Experiment(ingredients=[clotho_v2])
+
+
     @ex.automain
     def main(_config):
         ds = get_clotho_v2('test')
@@ -431,4 +443,6 @@ if __name__ == '__main__':
         ds__ = Subset(ds, [0, 5, 10])
         ds__[0]
         ds.cache_audios()
+
+
     ex.run()

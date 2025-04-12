@@ -85,8 +85,7 @@ class Clotho_v2Dataset(DatasetBaseClass):
                     del attributes['caption_1']
             else:
                 attributes['caption'] = ''
-            attributes[
-                'html'] = f'<iframe frameborder="0" scrolling="no" src="https://freesound.org/embed/sound/iframe/{attributes["sound_id"]}/simple/small/" width="375" height="30"></iframe>'
+            attributes['html'] = f'<iframe frameborder="0" scrolling="no" src="https://freesound.org/embed/sound/iframe/{attributes["sound_id"]}/simple/small/" width="375" height="30"></iframe>'
             if 'sound_id' in attributes:
                 del attributes['sound_id'], attributes['sound_link']
             if 'start_end_samples' in attributes:
@@ -120,15 +119,14 @@ class Clotho_v2Dataset(DatasetBaseClass):
         for k in attributes:
             audio[k] = attributes[k]
         audio['idx'] = item
-        audio[
-            'caption_hard'] = ''  # get_hard_negative(audio['caption'], ablate_while=self.ablate_while) if self.add_hard_negatives else ''
+        audio['caption_hard'] = ''  # get_hard_negative(audio['caption'], ablate_while=self.ablate_while) if self.add_hard_negatives else ''
 
         if audio['caption_hard'] != '' and self.hard_negatives.get(item):
             hard_index = torch.randint(len(self.hard_negatives.get(item)), (1,)).item()
             audio['caption_hard'] = self.hard_negatives.get(item)[hard_index]
 
-        i = (item + 1) % 5
-        j = item // 5
+        # i = (item + 1) % 5
+        # j = item // 5
 
         # audio['caption_other'] = self.attributes[j*5 + i]['caption']
 
