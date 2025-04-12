@@ -11,11 +11,13 @@ from glob import glob
 import numpy as np
 import pytorch_lightning as pl
 import torch
+torch.set_float32_matmul_precision('high')
 import torch.distributed as dist
 import wandb
 from nltk.corpus import stopwords
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.strategies import DDPStrategy
 from sacred import Experiment
 
 from data.data_loader import data_loader, get_train_data_loader, get_eval_data_loader
@@ -131,11 +133,11 @@ def default_config():
     gradient_clip_val = None
 
     # technical stuff
-    gpus = 1
+    gpus = torch.cuda.device_count()
     accelerator = 'cuda' if torch.cuda.is_available() else 'cpu'
     half_precision = True
     fast_dev_run = False
-    strategy = 'auto'
+    strategy = 'auto' if gpus == 1 else DDPStrategy(find_unused_parameters=True)
     monitor = 'mAP@10'
     enable_checkpointing = True
 
@@ -410,8 +412,7 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
 
     def forward_audio(self, batch, y=None, y_mask=None):
 
-        device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-        batch['audio'] = batch['audio'].to(device)
+        batch['audio'] = batch['audio'].to(self.device)
 
         # embed audios
         with torch.set_grad_enabled(not self.kwargs['audio_features']['frozen']):
@@ -426,7 +427,7 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
             m[:math.ceil((batch['audio_length'][i].item() * f.shape[0]))] = 1
             audio_mask.append(m)
 
-        batch['audio_features_mask'] = torch.stack(audio_mask).to(device)
+        batch['audio_features_mask'] = torch.stack(audio_mask).to(self.device)
 
         audio_features = batch['audio_features']
         audio_features_mask = batch['audio_features_mask']
@@ -444,7 +445,7 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
                 audio_features = torch.nn.functional.normalize(audio_features, p=2, dim=-1)
 
             audio_token = self.audio_token.expand(len(audio_features), -1, -1)
-            audio_token_mask = torch.ones(len(audio_features_mask), 1).to(audio_features_mask.device)
+            audio_token_mask = torch.ones(len(audio_features_mask), 1).to(self.device)
 
             if self.kwargs['init_audio_token_with_mean']:
                 audio_token = audio_token + audio_features.mean(1)[:, None, :]
@@ -508,8 +509,6 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
 
     def forward_sentence(self, batch):
 
-        device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-
         captions = []
         for i, b in enumerate(batch['caption']):
             if not (type(b) == str):
@@ -527,8 +526,8 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
             truncation=True
         )
 
-        batch['input_ids'] = tokenized['input_ids'].to(device)
-        batch['attention_mask'] = tokenized['attention_mask'].to(device)
+        batch['input_ids'] = tokenized['input_ids'].to(self.device)
+        batch['attention_mask'] = tokenized['attention_mask'].to(self.device)
 
         with torch.set_grad_enabled(not self.kwargs['sentence_features']['frozen']):
             if self.kwargs['sentence_features']['frozen']:
@@ -644,7 +643,7 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
             # C_distilled = self.rank_sequences(ae, None, se, None).to(C.device)
             se = torch.nn.functional.normalize(se, p=2, dim=-1)
             ae = torch.nn.functional.normalize(ae, p=2, dim=-1)
-            C_distilled = (ae[:, None] * se[None, :]).sum(-1).mean(-1).to(C.device)
+            C_distilled = (ae[:, None] * se[None, :]).sum(-1).mean(-1).to(self.device)
             C_distilled /= torch.abs(self.tau)
 
             distill_loss = 0.5 * (
@@ -975,7 +974,7 @@ def get_trainer(wandb_logger, max_epochs, max_samples_per_epoch, gpus, half_prec
         logger=wandb_logger,
         max_epochs=max_epochs,
         callbacks=get_callbacks(wandb_logger),
-        precision=16 if half_precision else 32,
+        precision='16-mixed' if half_precision else 32,
         limit_train_batches=1.0 if max_steps_per_epoch <= 0 else max_steps_per_epoch // gpus,
         limit_val_batches=1.0,
         reload_dataloaders_every_n_epochs=1 if max_steps_per_epoch > 0 else 0,

@@ -1,9 +1,5 @@
-/src/training/wandb/
-/src/experiments/wandb/
-/src/experiments/train_on_audioset/wandb/
-
-src/wandb
-
+wandb
+resources
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -1,9 +1,10 @@
-import torch
-import pandas as pd
 import os
+
+import pandas as pd
 from sacred import Ingredient
-from utils.directories import directories, get_dataset_dir
+
 from data.datasets.dataset_base_classes import audio_dataset, DatasetBaseClass
+from utils.directories import directories, get_dataset_dir
 
 SPLITS = ['development', 'validation', 'evaluation']
 
@@ -21,7 +22,6 @@ def config():
 
 @clotho_v2.capture
 def get_clotho_v2(split, folder_name, compress):
-
     splits = {'train': 'development', 'val': 'validation', 'test': 'evaluation'}
     assert split in list(splits.keys())
     ds = Clotho_v2Dataset(splits[split])
@@ -36,7 +36,7 @@ class Clotho_v2Dataset(DatasetBaseClass):
         self.compress = compress
         self.add_hard_negatives = add_hard_negatives
         self.add_hard_negatives_gpt = add_hard_negatives_gpt
-        self.ablate_while=ablate_while
+        self.ablate_while = ablate_while
         root_dir = os.path.join(get_dataset_dir(), folder_name)
 
         assert os.path.exists(root_dir), f'Parameter \'root_dir\' is invalid. {root_dir} does not exist.'
@@ -78,13 +78,15 @@ class Clotho_v2Dataset(DatasetBaseClass):
             if f'caption_{caption_idx + 1}' in attributes:
                 attributes['caption'] = attributes[f'caption_{caption_idx + 1}']
                 if 'caption_2' in attributes:
-                    del attributes['caption_1'], attributes['caption_2'], attributes['caption_3'], attributes['caption_4'], attributes[
+                    del attributes['caption_1'], attributes['caption_2'], attributes['caption_3'], attributes[
+                        'caption_4'], attributes[
                         'caption_5']
                 else:
                     del attributes['caption_1']
             else:
                 attributes['caption'] = ''
-            attributes['html'] = f'<iframe frameborder="0" scrolling="no" src="https://freesound.org/embed/sound/iframe/{attributes["sound_id"]}/simple/small/" width="375" height="30"></iframe>'
+            attributes[
+                'html'] = f'<iframe frameborder="0" scrolling="no" src="https://freesound.org/embed/sound/iframe/{attributes["sound_id"]}/simple/small/" width="375" height="30"></iframe>'
             if 'sound_id' in attributes:
                 del attributes['sound_id'], attributes['sound_link']
             if 'start_end_samples' in attributes:
@@ -118,7 +120,8 @@ class Clotho_v2Dataset(DatasetBaseClass):
         for k in attributes:
             audio[k] = attributes[k]
         audio['idx'] = item
-        audio['caption_hard'] = '' # get_hard_negative(audio['caption'], ablate_while=self.ablate_while) if self.add_hard_negatives else ''
+        audio[
+            'caption_hard'] = ''  # get_hard_negative(audio['caption'], ablate_while=self.ablate_while) if self.add_hard_negatives else ''
 
         if audio['caption_hard'] != '' and self.hard_negatives.get(item):
             hard_index = torch.randint(len(self.hard_negatives.get(item)), (1,)).item()
@@ -138,17 +141,17 @@ class Clotho_v2Dataset(DatasetBaseClass):
         return f'ClothoV2_{self.split}'
 
 
-
 if __name__ == '__main__':
     import torch
     from sacred import Experiment
 
     ex = Experiment(ingredients=[clotho_v2])
+
+
     @ex.automain
     def main(_config):
         train = get_clotho_v2('train')
         print(train[7])
 
+
     ex.run(config_updates={'directories': {'data_dir': '~/shared'}})
-
-
