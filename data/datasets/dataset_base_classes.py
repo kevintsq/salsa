@@ -21,8 +21,7 @@ os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 @audio_dataset.config
 def config():
     sample_rate = 32000
-    processes = 32
-    shared = False
+    shared = True
 
     run_cached_features_test = 1
 
@@ -30,9 +29,8 @@ def config():
 class LoadAudios:
 
     @audio_dataset.capture
-    def __init__(self, sample_rate=32000, processes=1, shared=False):
+    def __init__(self, sample_rate=32000, shared=False):
         self.sample_rate = sample_rate
-        self.processes = processes
         self.compress = False
         self.shared = shared
         self.__cached__ = False
@@ -77,7 +75,7 @@ class LoadAudios:
         print(f"trying to load {len(unique_paths)} files from {file_path}")
         if not os.path.exists(file_path):
             # compress and load files
-            with multiprocessing.Pool(processes=self.processes) as pool:
+            with multiprocessing.Pool() as pool:
                 self.__mp3s__ = list(
                     tqdm.tqdm(
                         pool.imap(encode if self.compress else load_wavs, path_iter(unique_paths, self.sample_rate)),
@@ -94,7 +92,15 @@ class LoadAudios:
                     mp3s[i] = self.__mp3s__[i]
 
         # copy hd5py file to local drive
-        if 'SLURM_TMPDIR' in os.environ:
+        if self.shared and os.path.exists('/dev/shm'):
+            tmp_hdf_path = os.path.join('/dev/shm', os.path.basename(file_path))
+            if not os.path.exists(tmp_hdf_path):
+                print(f"Copying HDF5 file to /dev/shm: {tmp_hdf_path}")
+                shutil.copyfile(file_path, tmp_hdf_path)
+            else:
+                print(f"HDF5 already in /dev/shm: {tmp_hdf_path}")
+                self.__dataset_file__ = tmp_hdf_path
+        elif 'SLURM_TMPDIR' in os.environ and os.path.exists(os.environ['SLURM_TMPDIR']):
             tmp_hdf_path = os.path.join(os.environ['SLURM_TMPDIR'], os.path.basename(file_path))
             if not os.path.exists(tmp_hdf_path):
                 print(f"Copying HDF5 file to SLURM_TMPDIR: {tmp_hdf_path}")

@@ -1,6 +1,8 @@
 import os
+
 from sacred import Ingredient
-from utils.project import project, get_project_name
+
+from utils.project import project
 
 directories = Ingredient('directories', ingredients=[project])
 
