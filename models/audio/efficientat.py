@@ -1,5 +1,6 @@
 import torch
 from models.audio.external.MobileNetV3 import get_model as get_mobile_net
+from models.audio.external.dymn.model import get_model as get_dymn
 from models.audio.external.MobileNetV3 import AugmentMelSTFT
 
 
@@ -7,8 +8,12 @@ def get_efficientat(model_name='mn40_as_ext', freqm=48, timem=192, return_sequen
     # get the PaSST model wrapper, includes Melspectrogram and the default pre-trained transformer
     if "mn40_as_ext" == model_name:
         model = get_mobile_net(width_mult=4.0, pretrained_name=model_name)
+        dim = 3840
+    elif "dymn20_as(4)" == model_name:
+        model = get_dymn(width_mult=2.0, pretrained_name=model_name)
+        dim = 527
     else:
-        raise ValueError(f"Model {model_name} not found. Available models: mn40_as_ext")
+        raise ValueError(f"Model {model_name} not found. Available models: mn40_as_ext, dymn20_as")
 
     # print(model.mel)  # Extracts mel spectrogram from raw waveforms.
 
@@ -33,7 +38,7 @@ def get_efficientat(model_name='mn40_as_ext', freqm=48, timem=192, return_sequen
 
     wrapper = Wrapper(mel, model)
 
-    return wrapper, 3840
+    return wrapper, dim
 
 
 if __name__ == '__main__':

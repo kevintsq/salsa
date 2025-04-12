@@ -404,6 +404,8 @@ def collapse_dim(x: Tensor, dim: int, mode: str = "pool", pool_fn: Callable[[Ten
         s[combine_dim] *= dim
         s[dim] //= dim
         return x.view(s)
+    else:
+        raise ValueError(f"Unknown mode '{mode}' for collapsing dimension. Must be 'pool' or 'combine'")
 
 
 class CollapseDim(nn.Module):

@@ -311,8 +311,8 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         layer_sizes = [
             self.kwargs['audio_features']['sequence_model']['dim']
             if self.kwargs['audio_features']['sequence_model']['num_layers'] > 0 else audio_output_size]
-        layer_sizes += [self.kwargs['audio_features']['adopt_layer_size']] * self.kwargs['audio_features'][
-            'adopt_n_layers']
+        layer_sizes += ([self.kwargs['audio_features']['adopt_layer_size']] *
+                        self.kwargs['audio_features']['adopt_n_layers'])
         layer_sizes += [self.kwargs['shared_representation_size']]
         audio_layers = []
         for i, o in zip(layer_sizes[:-1], layer_sizes[1:]):

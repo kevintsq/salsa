@@ -8,7 +8,7 @@ def get_audio_embedding_model(name, segment_length=10, hop_size=10, model_config
 
     if name.startswith('passt'):
         model, emb_dim = get_passt(name, **model_config)
-    elif name.startswith('mn'):
+    elif 'mn' in name:
         model, emb_dim = get_efficientat(name, **model_config)
     elif name.startswith('atst'):
         model = get_atst('atstframe_base_as2M.ckpt', **model_config)
