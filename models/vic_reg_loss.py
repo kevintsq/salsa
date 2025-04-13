@@ -9,6 +9,20 @@ def off_diagonal(mat):
     return mat.flatten()[:-1].view(n - 1, n + 1)[:, 1:].flatten()
 
 
+class Projector(nn.Module):
+    def __init__(self, in_dim, out_dim):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(),
+            nn.Linear(512, out_dim)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
 class VICRegLoss(nn.Module):
     def __init__(self, sim_coeff=25.0, std_coeff=25.0, cov_coeff=1.0, eps=1e-4):
         super().__init__()
@@ -16,8 +30,13 @@ class VICRegLoss(nn.Module):
         self.std_coeff = std_coeff
         self.cov_coeff = cov_coeff
         self.eps = eps
+        self.projector1 = Projector(1024, 128)
+        self.projector2 = Projector(1024, 128)
 
     def forward(self, z1, z2):
+        z1 = self.projector1(z1)
+        z2 = self.projector2(z2)
+
         # Invariance loss
         sim_loss = F.mse_loss(z1, z2)
 

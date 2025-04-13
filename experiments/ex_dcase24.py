@@ -28,7 +28,7 @@ from data.datasets.dataset_base_classes import ConcatDataset
 from data.datasets.wavcaps import wavcaps, get_wavecaps
 from models.info_nce_loss import InfoNCELoss
 from models.triplet_loss import TripletLossHardNegMiningPlus
-from models.vic_reg_loss import VICRegLoss
+from models.vic_reg_loss import VICRegLoss, Projector
 from utils.directories import directories, get_model_dir, get_dataset_dir
 
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
@@ -104,8 +104,8 @@ def default_config():
     }
 
     # loss function
-    triplet_weight = 1
-    vic_reg_weight = 0
+    triplet_weight = 0
+    vic_reg_weight = 1
     info_nce_weight = 0
     distill_weight = 0
     initial_tau = 0.05
@@ -128,6 +128,7 @@ def default_config():
     lr_audio_project = 2e-5
     lr_sentence_encoder = 2e-5
     lr_sentence_project = 2e-5
+    lr_other = 2e-5
     min_lr = 1e-7
     hard_steps = False
     warmup_length = 1
@@ -415,7 +416,7 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
 
         self.info_nce_loss = InfoNCELoss()
         self.triplet_loss = TripletLossHardNegMiningPlus()
-        self.vic_reg_loss = VICRegLoss()
+        self.vic_reg_loss = VICRegLoss().to(self.device).train()
 
     def forward_audio(self, batch, y=None, y_mask=None):
 
@@ -859,6 +860,8 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         audio_seq = []
         text_seq = []
 
+        others = []
+
         for k, p in self.named_parameters():
             if 'audio_embedding' in k:
                 audio_encoder.append(p)
@@ -871,13 +874,14 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
             elif 'tau' in k or 'timing_tau' in k:
                 audio_seq.append(p)
             else:
-                raise ValueError
+                others.append(p)
 
         param_groups = [
             {"params": audio_encoder, "lr": self.kwargs['lr_audio_encoder']},
             {"params": text_encoder, "lr": self.kwargs['lr_sentence_encoder']},
             {"params": audio_seq, "lr": self.kwargs['lr_audio_project']},
             {"params": text_seq, "lr": self.kwargs['lr_sentence_project']},
+            {"params": others, "lr": self.kwargs['lr_other']},
         ]
 
         optimizer = get_optimizer(param_groups)

@@ -79,8 +79,7 @@ class Clotho_v2Dataset(DatasetBaseClass):
                 attributes['caption'] = attributes[f'caption_{caption_idx + 1}']
                 if 'caption_2' in attributes:
                     del attributes['caption_1'], attributes['caption_2'], attributes['caption_3'], attributes[
-                        'caption_4'], attributes[
-                        'caption_5']
+                        'caption_4'], attributes['caption_5']
                 else:
                     del attributes['caption_1']
             else:
