@@ -186,15 +186,10 @@ class DyMN(nn.Module):
 
     def _forward_impl(
         self, x: Tensor, return_fmaps: bool = False
-    ) -> Union[Tuple[Tensor, Tensor], Tuple[Tensor, List[Tensor]]]:
-        if return_fmaps:
-            x, fmaps = self._feature_forward(x, return_fmaps=True)
-            x, _ = self._clf_forward(x)
-            return x, fmaps
-        else:
-            x = self._feature_forward(x)
-            x, embed = self._clf_forward(x)
-            return x, embed
+    ):
+        x = self._feature_forward(x)
+        x, embed = self._clf_forward(x)
+        return embed
 
     def forward(
         self, x: Tensor, return_fmaps: bool = False

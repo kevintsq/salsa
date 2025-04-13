@@ -204,23 +204,10 @@ class MN(nn.Module):
                     nn.init.zeros_(m.bias)
 
     def _forward_impl(self, x: Tensor, return_fmaps: bool = False):
-        fmaps = []
-
-        for i, layer in enumerate(self.features):
+        for layer in self.features:
             x = layer(x)
-            if return_fmaps:
-                fmaps.append(x)
-
-        feature_maps = x
         features = F.adaptive_avg_pool2d(x, (1, 1)).squeeze()
-        x = self.classifier(x).squeeze()
-
-        if features.dim() == 1 and x.dim() == 1:
-            # squeezed batch dimension
-            features = features.unsqueeze(0)
-            x = x.unsqueeze(0)
-
-        return features, feature_maps, x
+        return features
 
     def forward(self, x: Tensor) -> Union[Tuple[Tensor, Tensor], Tuple[Tensor, List[Tensor]]]:
         return self._forward_impl(x)
@@ -811,6 +798,7 @@ class AugmentMelSTFT(nn.Module):
         else:
             self.timem = torchaudio.transforms.TimeMasking(timem, iid_masks=True)
 
+    @torch.no_grad()
     def forward(self, x):
         # Step 1: pre-emphasis
         x = nn.functional.conv1d(x.unsqueeze(1), self.preemphasis_coefficient).squeeze(1)

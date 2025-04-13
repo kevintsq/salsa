@@ -1,7 +1,22 @@
 import torch
+
 from models.audio.external.MobileNetV3 import get_model as get_mobile_net
 from models.audio.external.dymn.model import get_model as get_dymn
 from models.audio.external.MobileNetV3 import AugmentMelSTFT
+
+
+class Wrapper(torch.nn.Module):
+
+    def __init__(self, mel, model):
+        super().__init__()
+        self.mel = mel
+        self.model = model
+
+    def forward(self, x, **kwargs):
+        with torch.no_grad():
+            mel = self.mel(x)
+        out = self.model(mel[:, None])[:, None, None, :]
+        return out
 
 
 def get_efficientat(model_name='mn40_as_ext', freqm=48, timem=192, return_sequence=False, **kwargs):
@@ -11,7 +26,7 @@ def get_efficientat(model_name='mn40_as_ext', freqm=48, timem=192, return_sequen
         dim = 3840
     elif "dymn20_as(4)" == model_name:
         model = get_dymn(width_mult=2.0, pretrained_name=model_name)
-        dim = 527
+        dim = 1920
     else:
         raise ValueError(f"Model {model_name} not found. Available models: mn40_as_ext, dymn20_as")
 
@@ -19,22 +34,6 @@ def get_efficientat(model_name='mn40_as_ext', freqm=48, timem=192, return_sequen
 
     mel = AugmentMelSTFT(n_mels=128, sr=32000, win_length=800, hopsize=320, n_fft=1024, freqm=freqm,
                          timem=timem)
-
-    class Wrapper(torch.nn.Module):
-
-        def __init__(self, mel, model):
-            super().__init__()
-            self.mel = mel
-            self.model = model
-
-        def forward(self, x, **kwargs):
-            with torch.no_grad():
-                mel = self.mel(x)
-            if return_sequence:
-                out = self.model(mel[:, None])[1].permute(0, 2, 3, 1)
-            else:
-                out = self.model(mel[:, None])[0][:, None, None, :]
-            return out
 
     wrapper = Wrapper(mel, model)
 

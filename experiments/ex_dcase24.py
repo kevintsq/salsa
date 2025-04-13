@@ -106,8 +106,8 @@ def default_config():
     # loss function
     triplet_weight = 0
     vic_reg_weight = 0
-    sim_siam_weight = 1
-    info_nce_weight = 0
+    sim_siam_weight = 0
+    info_nce_weight = 1
     distill_weight = 0
     initial_tau = 0.05
     freeze_tau = True
@@ -425,11 +425,12 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         batch['audio'] = batch['audio'].to(self.device)
 
         # embed audios
-        with torch.set_grad_enabled(not self.kwargs['audio_features']['frozen']):
-            if self.kwargs['audio_features']['frozen']:
-                self.audio_embedding_model.eval()
-            batch['audio_features'] = self.audio_embedding_model(batch['audio'], audio_length=batch['audio_length'])
-            batch['audio_features'] = batch['audio_features'].mean(1)  # average over frequency dimension
+        if self.kwargs['audio_features']['frozen']:
+            self.audio_embedding_model.eval()
+        else:
+            self.audio_embedding_model.train()
+        batch['audio_features'] = self.audio_embedding_model(batch['audio'], audio_length=batch['audio_length'])
+        batch['audio_features'] = batch['audio_features'].mean(1)  # average over frequency dimension
 
         T = batch['audio_features'][0].shape[0]
         audio_lengths = (batch['audio_length'] * T).ceil_().long()
@@ -714,6 +715,10 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
             vic_reg_loss = self.vic_reg_loss(audio_features.squeeze(1), sentence_features.squeeze(1))
             self.log(f"{mode}/vic_reg_loss", vic_reg_loss, batch_size=len(audio_features), add_dataloader_idx=False, sync_dist=True)
             loss += vic_reg_loss * self.kwargs['vic_reg_weight']
+        if self.kwargs['sim_siam_weight'] > 0:
+            sim_siam_loss = self.sim_siam_loss(audio_features.squeeze(1), sentence_features.squeeze(1))
+            self.log("train/sim_siam_loss", sim_siam_loss, batch_size=len(audio_features), sync_dist=True)
+            loss += sim_siam_loss * self.kwargs['sim_siam_weight']
         if self.kwargs['triplet_weight'] > 0:
             triplet_loss = self.triplet_loss(audio_features, sentence_features)
             self.log(f"{mode}/triplet_loss", triplet_loss, batch_size=len(audio_features), add_dataloader_idx=False, sync_dist=True)

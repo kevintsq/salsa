@@ -1,6 +1,7 @@
 import torchvision
 from efficientnet_pytorch import EfficientNet
 
+from models.audio.external.MobileNetV3 import AugmentMelSTFT
 from .higher_models import *
 
 
@@ -108,18 +109,31 @@ class EffNetAttention(nn.Module):
         # expect input x = (batch_size, time_frame_num, frequency_bins), e.g., (12, 1024, 128)
         x = x.unsqueeze(1)
         x = x.transpose(2, 3)
+        feature_maps = self.effnet.extract_features(x)
+        features = F.adaptive_avg_pool2d(feature_maps, (1, 1)).squeeze()
+        return features
 
-        x = self.effnet.extract_features(x)
-        x = self.avgpool(x)
-        x = x.transpose(2, 3)
-        out, norm_att = self.attention(x)
+
+class Wrapper(torch.nn.Module):
+    def __init__(self, mel, model):
+        super().__init__()
+        self.mel = mel
+        self.model = model
+
+    def forward(self, x, **kwargs):
+        mel = self.mel(x)
+        out = self.model(mel.permute(0, 2, 1))[:, None, None, :]
         return out
 
 
-def get_efficient_net(**model_config):
-    audio_model = EffNetAttention(label_dim=1024, b=2, pretrain=False, head_num=4)
+def get_efficient_net(freqm=48, timem=192, return_sequence=False, **kwargs):
+    audio_model = EffNetAttention(label_dim=200, b=2, pretrain=False, head_num=4)
+    audio_model = torch.nn.DataParallel(audio_model)
     audio_model.load_state_dict(torch.load('resources/fsd_mdl_best_single.pth', map_location='cuda'))
-    return audio_model, None  # FIXME: emb_dim
+    mel = AugmentMelSTFT(n_mels=128, sr=32000, win_length=800, hopsize=320, n_fft=1024, freqm=freqm,
+                         timem=timem)
+    wrapper = Wrapper(mel, audio_model)
+    return wrapper, 1408
 
 
 if __name__ == '__main__':

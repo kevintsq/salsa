@@ -140,6 +140,8 @@ class MHeadAttention(nn.Module):
             return torch.sigmoid(x)
         elif activation == 'softmax':
             return F.softmax(x, dim=1)
+        else:
+            raise ValueError(f"Unknown activation function: {activation}")
 
     def forward(self, x):
         """input: (samples_num, freq_bins, time_steps, 1)
