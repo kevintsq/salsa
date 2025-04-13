@@ -1,10 +1,14 @@
 import torch
 
+from models.audio import get_efficient_net
+from models.audio.atst import get_atst
+from models.audio.efficientat import get_efficientat
+from models.audio.passt import get_passt
 
-def get_audio_embedding_model(name, segment_length=10, hop_size=10, model_config=dict(), multi_window=False):
-    from models.audio.passt import get_passt
-    from models.audio.atst import get_atst
-    from models.audio.efficientat import get_efficientat
+
+def get_audio_embedding_model(name, segment_length=10, hop_size=10, model_config=None, multi_window=False):
+    if model_config is None:
+        model_config = dict()
 
     if name.startswith('passt'):
         model, emb_dim = get_passt(name, **model_config)
@@ -13,8 +17,10 @@ def get_audio_embedding_model(name, segment_length=10, hop_size=10, model_config
     elif name.startswith('atst'):
         model = get_atst('atstframe_base_as2M.ckpt', **model_config)
         emb_dim = 768
+    elif name.startswith('efficient'):
+        model, emb_dim = get_efficient_net(**model_config)
     else:
-        raise AttributeError("Model not found")
+        raise ValueError(f'Unknown model name: {name}')
 
     if multi_window:
         assert False
