@@ -28,7 +28,7 @@ from data.datasets.dataset_base_classes import ConcatDataset
 from data.datasets.wavcaps import wavcaps, get_wavecaps
 from models.info_nce_loss import InfoNCELoss
 from models.triplet_loss import TripletLossHardNegMiningPlus
-from models.vic_reg_loss import VICRegLoss, Projector
+from models.vic_reg_loss import VICRegLoss, SimSiamLoss
 from utils.directories import directories, get_model_dir, get_dataset_dir
 
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
@@ -105,7 +105,8 @@ def default_config():
 
     # loss function
     triplet_weight = 0
-    vic_reg_weight = 1
+    vic_reg_weight = 0
+    sim_siam_weight = 1
     info_nce_weight = 0
     distill_weight = 0
     initial_tau = 0.05
@@ -417,6 +418,7 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         self.info_nce_loss = InfoNCELoss()
         self.triplet_loss = TripletLossHardNegMiningPlus()
         self.vic_reg_loss = VICRegLoss().to(self.device).train()
+        self.sim_siam_loss = SimSiamLoss().to(self.device).train()
 
     def forward_audio(self, batch, y=None, y_mask=None):
 
@@ -628,6 +630,10 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
             vic_reg_loss = self.vic_reg_loss(audio_features.squeeze(1), sentence_features.squeeze(1))
             self.log("train/vic_reg_loss", vic_reg_loss, batch_size=len(audio_features), sync_dist=True)
             loss += vic_reg_loss * self.kwargs['vic_reg_weight']
+        if self.kwargs['sim_siam_weight'] > 0:
+            sim_siam_loss = self.sim_siam_loss(audio_features.squeeze(1), sentence_features.squeeze(1))
+            self.log("train/sim_siam_loss", sim_siam_loss, batch_size=len(audio_features), sync_dist=True)
+            loss += sim_siam_loss * self.kwargs['sim_siam_weight']
         if self.kwargs['triplet_weight'] > 0:
             triplet_loss = self.triplet_loss(audio_features, sentence_features)
             self.log("train/triplet_loss", triplet_loss, batch_size=len(audio_features), sync_dist=True)
