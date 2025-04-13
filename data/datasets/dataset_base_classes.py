@@ -92,15 +92,15 @@ class LoadAudios:
                     mp3s[i] = self.__mp3s__[i]
 
         # copy hd5py file to local drive
-        if self.shared and os.path.exists('/dev/shm'):
-            tmp_hdf_path = os.path.join('/dev/shm', os.path.basename(file_path))
-            if not os.path.exists(tmp_hdf_path):
-                print(f"Copying HDF5 file to /dev/shm: {tmp_hdf_path}")
-                shutil.copyfile(file_path, tmp_hdf_path)
-            else:
-                print(f"HDF5 already in /dev/shm: {tmp_hdf_path}")
-            self.__dataset_file__ = tmp_hdf_path
-        elif 'SLURM_TMPDIR' in os.environ and os.path.exists(os.environ['SLURM_TMPDIR']):
+        # if self.shared and os.path.exists('/dev/shm'):
+        #     tmp_hdf_path = os.path.join('/dev/shm', os.path.basename(file_path))
+        #     if not os.path.exists(tmp_hdf_path):
+        #         print(f"Copying HDF5 file to /dev/shm: {tmp_hdf_path}")
+        #         shutil.copyfile(file_path, tmp_hdf_path)
+        #     else:
+        #         print(f"HDF5 already in /dev/shm: {tmp_hdf_path}")
+        #     self.__dataset_file__ = tmp_hdf_path
+        if 'SLURM_TMPDIR' in os.environ and os.path.exists(os.environ['SLURM_TMPDIR']):
             tmp_hdf_path = os.path.join(os.environ['SLURM_TMPDIR'], os.path.basename(file_path))
             if not os.path.exists(tmp_hdf_path):
                 print(f"Copying HDF5 file to SLURM_TMPDIR: {tmp_hdf_path}")
@@ -179,12 +179,12 @@ class LoadAudios:
         if hasattr(self, '__hdf5_file__') and self.__hdf5_file__ and type(self.__hdf5_file__) is h5py.File:
             self.__hdf5_file__.close()
             self.__hdf5_file__ = None
-        if self.__dataset_file__.startswith('/dev/shm'):
-            try:
-                os.remove(self.__dataset_file__)
-                print(f"Removed temporary HDF5 from /dev/shm: {self.__dataset_file__}")
-            except:
-                pass
+        # if self.__dataset_file__.startswith('/dev/shm'):
+        #     try:
+        #         os.remove(self.__dataset_file__)
+        #         print(f"Removed temporary HDF5 from /dev/shm: {self.__dataset_file__}")
+        #     except:
+        #         pass
 
     def __len__(self) -> int:
         return len(self.__get_audio_paths__())

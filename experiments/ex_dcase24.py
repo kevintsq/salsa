@@ -149,6 +149,7 @@ def default_config():
     strategy = 'auto' if gpus == 1 else DDPStrategy(find_unused_parameters=True)
     monitor = 'mAP@10'
     enable_checkpointing = True
+    compiled = False
 
     num_nodes = 1
 
@@ -283,6 +284,8 @@ def get_model(load_parameters, _config):
         missing_keys = ac.load_state_dict(ac_.state_dict())
         print(missing_keys)
 
+    if _config['compiled']:
+        ac = torch.compile(ac, mode='reduce-overhead')
     return ac
 
 
@@ -756,7 +759,7 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         idxs = [i.item() for b in outputs for i in b['idx']]
         # keywords = [i for b in outputs for i in b['keywords']]
         # html = [i for b in outputs for i in b['html']]
-        print('concatenating outputs')
+        print('Concatenating outputs')
 
         audio_features = torch.cat([o['audio_features'] for o in outputs])
         sentence_features = torch.cat([o['sentence_features'] for o in outputs])
@@ -792,7 +795,7 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
             # print("all_sentence_features.shape=", all_sentence_features.shape)
             sentence_features = all_sentence_features.reshape(-1, sentence_features.shape[-1])
             # print("sentence_features.shape=", sentence_features.shape)
-        print('sorting outputs')
+        print('Sorting outputs')
         _, sorted = np.unique(idxs, return_index=True)
 
         audio_features = audio_features[sorted]
@@ -805,7 +808,7 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         n_captions = Counter(paths)
         assert [v == n_captions[paths[0]] for k, v in n_captions.items()]
         n_captions = n_captions[paths[0]] if not self.kwargs['use_captions'] else 1
-        print('compute global ranking')
+        print('Computing global ranking')
         C = torch.empty((len(sentence_features), len(audio_features) // n_captions))
         all_audio_features = torch.concatenate([audio_features[::n_captions]])
         all_audio_masks = torch.concatenate([audio_mask[::n_captions]])
@@ -965,9 +968,9 @@ def update_lr(optimizer, epoch, lr_audio_encoder, lr_sentence_encoder, lr_audio_
 @audio_retrieval.capture
 def get_optimizer(parameters, beta1, beta2, eps, weight_decay, amsgrad, adamw):
     if adamw:
-        return torch.optim.AdamW(parameters, betas=(beta1, beta2), eps=eps, weight_decay=weight_decay, amsgrad=amsgrad)
+        return torch.optim.AdamW(parameters, betas=(beta1, beta2), eps=eps, weight_decay=weight_decay, amsgrad=amsgrad, fused=True)
     else:
-        return torch.optim.Adam(parameters, betas=(beta1, beta2), eps=eps, weight_decay=weight_decay, amsgrad=amsgrad)
+        return torch.optim.Adam(parameters, betas=(beta1, beta2), eps=eps, weight_decay=weight_decay, amsgrad=amsgrad, fused=True)
 
 
 @audio_retrieval.capture
