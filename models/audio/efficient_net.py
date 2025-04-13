@@ -9,12 +9,7 @@ class ResNetAttention(nn.Module):
     def __init__(self, label_dim=527, pretrain=True):
         super(ResNetAttention, self).__init__()
 
-        self.model = torchvision.models.resnet50(pretrained=False)
-
-        if pretrain == False:
-            print('ResNet50 Model Trained from Scratch (ImageNet Pretraining NOT Used).')
-        else:
-            print('Now Use ImageNet Pretrained ResNet50 Model.')
+        self.model = torchvision.models.resnet50(pretrained=pretrain)
 
         self.model.conv1 = torch.nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
 
@@ -67,7 +62,7 @@ class EffNetAttention(nn.Module):
     def __init__(self, label_dim=527, b=0, pretrain=True, head_num=4):
         super(EffNetAttention, self).__init__()
         self.middim = [1280, 1280, 1408, 1536, 1792, 2048, 2304, 2560]
-        if pretrain == False:
+        if not pretrain:
             print('EfficientNet Model Trained from Scratch (ImageNet Pretraining NOT Used).')
             self.effnet = EfficientNet.from_name('efficientnet-b' + str(b), in_channels=1)
         else:
@@ -127,11 +122,12 @@ class Wrapper(torch.nn.Module):
 
 
 def get_efficient_net(freqm=48, timem=192, return_sequence=False, **kwargs):
-    audio_model = EffNetAttention(label_dim=200, b=2, pretrain=False, head_num=4)
+    audio_model = EffNetAttention(label_dim=527, b=2, pretrain=False, head_num=4)
+    # audio_model = EffNetAttention(label_dim=200, b=2, pretrain=False, head_num=4)
     audio_model = torch.nn.DataParallel(audio_model)
-    audio_model.load_state_dict(torch.load('resources/fsd_mdl_best_single.pth', map_location='cuda'))
-    mel = AugmentMelSTFT(n_mels=128, sr=32000, win_length=800, hopsize=320, n_fft=1024, freqm=freqm,
-                         timem=timem)
+    audio_model.load_state_dict(torch.load('resources/as_mdl_0_wa.pth', map_location='cuda'))
+    # audio_model.load_state_dict(torch.load('resources/fsd_mdl_wa.pth', map_location='cuda'))
+    mel = AugmentMelSTFT(n_mels=128, sr=32000, win_length=800, hopsize=320, n_fft=1024, freqm=freqm, timem=timem)
     wrapper = Wrapper(mel, audio_model)
     return wrapper, 1408
 
