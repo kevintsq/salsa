@@ -26,6 +26,8 @@ from data.datasets.audioset import audioset
 from data.datasets.clotho_v2 import clotho_v2, get_clotho_v2
 from data.datasets.dataset_base_classes import ConcatDataset
 from data.datasets.wavcaps import wavcaps, get_wavecaps
+from models.info_nce_loss import InfoNCELoss
+from models.triplet_loss import TripletLossHardNegMiningPlus
 from models.vic_reg_loss import VICRegLoss
 from utils.directories import directories, get_model_dir, get_dataset_dir
 
@@ -102,7 +104,10 @@ def default_config():
     }
 
     # loss function
-    vic_reg_loss = True
+    triplet_weight = 1
+    vic_reg_weight = 0
+    info_nce_weight = 0
+    distill_weight = 0
     initial_tau = 0.05
     freeze_tau = True
     shared_representation_size = 1024
@@ -147,8 +152,6 @@ def default_config():
 
     run_ba_benchmark = False
 
-    loss_weight = 1.0
-
     projection_dropout = 0.0
 
     timing_loss_weight = 0.0
@@ -172,8 +175,6 @@ def default_config():
     run_cmd = None
     average_models = []
 
-    loss_weight = 1.0
-    distill_weight = 0.0
     distill_from = []
 
 
@@ -412,7 +413,9 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
 
         self.l = len(get_dataset_dir().split(os.path.sep))
 
-        self.vic_reg_loss = VICRegLoss(sim_coeff=100, std_coeff=25, cov_coeff=1)
+        self.info_nce_loss = InfoNCELoss()
+        self.triplet_loss = TripletLossHardNegMiningPlus()
+        self.vic_reg_loss = VICRegLoss()
 
     def forward_audio(self, batch, y=None, y_mask=None):
 
@@ -619,63 +622,48 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
             print("Sentence Features Shape:", sentence_features.shape)
             self.first = False
 
-        if self.kwargs['vic_reg_loss']:
-            loss = self.vic_reg_loss(audio_features.squeeze(1), sentence_features.squeeze(1))
-            self.log("train/loss", loss, batch_size=len(audio_features), sync_dist=True)
-            loss *= self.kwargs['loss_weight']
-            return loss
-
-        C = self.rank_sequences(audio_features, audio_mask, sentence_features, sentence_mask, batch=batch)
-        C /= torch.abs(self.tau)
-
         loss = 0
-        if self.kwargs.get('loss_weight', 0) > 0:
-            C_audio = torch.log_softmax(C, dim=0)
-            C_text = torch.log_softmax(C, dim=1)
-
-            assert C_audio.shape[0] == C_audio.shape[1],\
-                f'Audio Features Shape: {C_audio.shape} Sentence Features Shape: {C_text.shape}'
-            assert C_text.shape[0] == C_text.shape[1]
-
+        if self.kwargs['vic_reg_weight'] > 0:
+            vic_reg_loss = self.vic_reg_loss(audio_features.squeeze(1), sentence_features.squeeze(1))
+            self.log("train/vic_reg_loss", vic_reg_loss, batch_size=len(audio_features), sync_dist=True)
+            loss += vic_reg_loss * self.kwargs['vic_reg_weight']
+        if self.kwargs['triplet_weight'] > 0:
+            triplet_loss = self.triplet_loss(audio_features, sentence_features)
+            self.log("train/triplet_loss", triplet_loss, batch_size=len(audio_features), sync_dist=True)
+            loss += triplet_loss * self.kwargs['triplet_weight']
+        if self.kwargs['info_nce_weight'] > 0:
+            C = self.rank_sequences(audio_features, audio_mask, sentence_features, sentence_mask, batch=batch)
+            C /= torch.abs(self.tau)
             paths = np.array([hash(p) for p in batch['path']])
-
             if self.distributed_mode:
                 paths = self.all_gather(paths).reshape(-1)
             else:
                 paths = torch.tensor(paths, device=self.device)
-
             I = (paths.unsqueeze(0) == paths.unsqueeze(1))
-
-            loss = -0.5 * (C_audio[I].mean() + C_text[I].mean())
-
-            self.log("train/loss", loss, batch_size=len(audio_features), sync_dist=True)
+            info_nce_loss = self.info_nce_loss(C, I)
+            self.log("train/info_nce_loss", info_nce_loss, batch_size=len(audio_features), sync_dist=True)
             self.log('train/tau', torch.abs(self.tau), sync_dist=True)
-
-            loss *= self.kwargs['loss_weight']
-
-        distill_loss = 0
-        if self.kwargs.get('distill_weight', 0) > 0:
+            loss += info_nce_loss * self.kwargs['info_nce_weight']
+        if self.kwargs['distill_weight'] > 0:
             sep = os.path.sep
             ae = torch.stack([torch.stack(self.audio_embeddings[sep.join(p.split(sep)[self.l:])])
                               for p in batch['path']])  # A, EM, D
             se = torch.stack([torch.stack(self.sentence_embeddings[c]) for c in batch['caption']])  # S, EM, D
-
             # C_distilled = self.rank_sequences(ae, None, se, None).to(C.device)
             se = torch.nn.functional.normalize(se, p=2, dim=-1)
             ae = torch.nn.functional.normalize(ae, p=2, dim=-1)
             C_distilled = (ae[:, None] * se[None, :]).sum(-1).mean(-1).to(self.device)
             C_distilled /= torch.abs(self.tau)
-
+            C = self.rank_sequences(audio_features, audio_mask, sentence_features, sentence_mask, batch=batch)
+            C /= torch.abs(self.tau)
             distill_loss = 0.5 * (
                     torch.nn.functional.cross_entropy(C, torch.softmax(C_distilled, dim=1)) +
                     torch.nn.functional.cross_entropy(C.T, torch.softmax(C_distilled.T, dim=1))
             )
-
-            self.log('train/distill_C', distill_loss, sync_dist=True)
-
-            distill_loss *= self.kwargs['distill_weight']
-
-        return loss + distill_loss
+            self.log('train/distill_C', distill_loss, batch_size=len(audio_features), sync_dist=True)
+            loss += distill_loss * self.kwargs['distill_weight']
+        self.log("train/loss", loss, batch_size=len(audio_features), sync_dist=True)
+        return loss
 
     @torch.no_grad()
     def validation_step(self, batch, batch_idx, dl_index=0, mode='val'):
@@ -714,38 +702,31 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         audio_features = args['audio_features']
         sentence_features = args['sentence_features']
 
-        if self.kwargs['vic_reg_loss']:
-            loss = self.vic_reg_loss(audio_features.squeeze(1), sentence_features.squeeze(1))
-            self.log(f"{mode}/loss", loss, batch_size=len(audio_features), add_dataloader_idx=False, sync_dist=True)
+        loss = 0
+        if self.kwargs['vic_reg_weight'] > 0:
+            vic_reg_loss = self.vic_reg_loss(audio_features.squeeze(1), sentence_features.squeeze(1))
+            self.log(f"{mode}/vic_reg_loss", vic_reg_loss, batch_size=len(audio_features), add_dataloader_idx=False, sync_dist=True)
+            loss += vic_reg_loss * self.kwargs['vic_reg_weight']
+        if self.kwargs['triplet_weight'] > 0:
+            triplet_loss = self.triplet_loss(audio_features, sentence_features)
+            self.log(f"{mode}/triplet_loss", triplet_loss, batch_size=len(audio_features), add_dataloader_idx=False, sync_dist=True)
+            loss += triplet_loss * self.kwargs['triplet_weight']
         else:
             audio_mask = args['audio_mask']
             sentence_mask = args['sentence_mask']
-
             C = self.rank_sequences(audio_features, audio_mask, sentence_features, sentence_mask)
-            C_ = C / torch.abs(self.tau)
-
-            C_audio = torch.log_softmax(C, dim=0)
-            C_text = torch.log_softmax(C, dim=1)
-
-            C_audio_ = torch.log_softmax(C_, dim=0)
-            C_text_ = torch.log_softmax(C_, dim=1)
-
-            assert C_audio.shape[0] == C_audio.shape[1],\
-                f'Audio Features Shape: {audio_features.shape} Sentence Features Shape: {sentence_features.shape}'
-            assert C_text.shape[0] == C_text.shape[1]
-
-            I = torch.tensor(paths[:, None] == paths[None, :], dtype=torch.bool, device=self.device)
-
-            loss = -0.5 * (C_audio[I].mean() + C_text[I].mean())
-            loss_ = -0.5 * (C_audio_[I].mean() + C_text_[I].mean())
-            self.log(f"{mode}/loss", loss.item(), batch_size=len(audio_features), add_dataloader_idx=False, sync_dist=True)
-            self.log(f"{mode}/loss_tau", loss_.item(), batch_size=len(audio_features), add_dataloader_idx=False,
-                     sync_dist=True)
+            C_tau = C / torch.abs(self.tau)
+            I = torch.tensor(paths[:, None] == paths[None, :], device=self.device)
+            info_nce_loss = self.info_nce_loss(C, I)
+            info_nce_loss_tau = self.info_nce_loss(C_tau, I)
+            self.log(f"{mode}/info_nce_loss", info_nce_loss, batch_size=len(audio_features), add_dataloader_idx=False, sync_dist=True)
+            self.log(f"{mode}/info_nce_loss_tau", info_nce_loss_tau, batch_size=len(audio_features), add_dataloader_idx=False, sync_dist=True)
+            loss += info_nce_loss * self.kwargs['info_nce_weight']
+        self.log(f"{mode}/loss", loss, batch_size=len(audio_features), add_dataloader_idx=False, sync_dist=True)
         args['path'] = paths
         args['caption'] = captions
         args['keywords'] = keywords
         args['html'] = html
-
         self.validation_outputs.append(args)
 
     def on_validation_epoch_end(self, mode='val'):

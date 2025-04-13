@@ -168,7 +168,7 @@ class LoadAudios:
                 print("cached shape: ", a2.shape)
 
             if any(a1 != a2):
-                print("Mean difference: ", np.abs(a1 - a2).mean())
+                print("Mean difference:", np.abs(a1 - a2).mean())
 
         self.__quick__, self.__cached__ = q, c
 
@@ -179,6 +179,12 @@ class LoadAudios:
         if hasattr(self, '__hdf5_file__') and self.__hdf5_file__ and type(self.__hdf5_file__) is h5py.File:
             self.__hdf5_file__.close()
             self.__hdf5_file__ = None
+        if self.__dataset_file__.startswith('/dev/shm'):
+            try:
+                os.remove(self.__dataset_file__)
+                print(f"Removed temporary HDF5 from /dev/shm: {self.__dataset_file__}")
+            except:
+                pass
 
     def __len__(self) -> int:
         return len(self.__get_audio_paths__())

@@ -11,4 +11,4 @@ warmup_length=1 \
 rampdown_start=1 \
 train_on=clothov2 \
 seed=409194 \
-directories.data_dir=/mnt/HDD1/st5265
+directories.data_dir=/mnt/SSD1/st5265
