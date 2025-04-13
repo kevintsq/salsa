@@ -64,7 +64,7 @@ def default_config():
             's_patchout_f': 2,
             'freqm': 0,
             'timem': 0,
-            'return_sequence': False
+            'scatter': True
         },
         'use_local_model': False,
         'frozen': False,

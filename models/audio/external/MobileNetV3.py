@@ -4,6 +4,7 @@ from functools import partial
 from typing import Any, Callable, List, Optional, Sequence, Tuple, Union
 
 import torchaudio
+from kymatio.torch import Scattering1D
 from torch import nn, Tensor
 from torch.hub import load_state_dict_from_url
 
@@ -802,9 +803,9 @@ class AugmentMelSTFT(nn.Module):
     def forward(self, x):
         # Step 1: pre-emphasis
         x = nn.functional.conv1d(x.unsqueeze(1), self.preemphasis_coefficient).squeeze(1)
-        x = stft(x, self.n_fft, hop_length=self.hopsize, win_length=self.win_length,
-                 center=True, normalized=False, window=self.window, return_complex=False)
-        x = x.square_().sum(dim=-1)  # power mag
+        # x = stft(x, self.n_fft, hop_length=self.hopsize, win_length=self.win_length,
+        #          center=True, normalized=False, window=self.window, return_complex=False)
+        # x = x.square_().sum(dim=-1)  # power mag
 
         # Step 2: dynamic fmin/fmax augmentation
         if self.training:
@@ -815,25 +816,25 @@ class AugmentMelSTFT(nn.Module):
             fmax = self.fmax
 
         # Step 3: mel spectrogram
-        # mel_transform = torchaudio.transforms.MelSpectrogram(
-        #     sample_rate=self.sr,
-        #     n_fft=self.n_fft,
-        #     hop_length=self.hopsize,
-        #     win_length=self.win_length,
-        #     window_fn=torch.hann_window,
-        #     n_mels=self.n_mels,
-        #     f_min=fmin,
-        #     f_max=fmax,
-        #     power=2.0,
-        #     normalized=False,
-        # ).to(x.device)
+        mel_transform = torchaudio.transforms.MelSpectrogram(
+            sample_rate=self.sr,
+            n_fft=self.n_fft,
+            hop_length=self.hopsize,
+            win_length=self.win_length,
+            window_fn=torch.hann_window,
+            n_mels=self.n_mels,
+            f_min=fmin,
+            f_max=fmax,
+            power=2.0,
+            normalized=False,
+        ).to(x.device)
 
-        mel_basis, _ = get_mel_banks_safe(self.n_mels, self.n_fft, self.sr, fmin, fmax,
-                                          vtln_low=100.0, vtln_high=-500., vtln_warp_factor=1.0)
-        mel_basis = torch.nn.functional.pad(mel_basis.cuda(), (0, 1), mode='constant', value=0)
+        # mel_basis, _ = get_mel_banks_safe(self.n_mels, self.n_fft, self.sr, fmin, fmax,
+        #                                   vtln_low=100.0, vtln_high=-500., vtln_warp_factor=1.0)
+        # mel_basis = torch.nn.functional.pad(mel_basis.cuda(), (0, 1), mode='constant', value=0)
         with torch.amp.autocast('cuda', enabled=False):
-            # melspec = mel_transform(x)
-            melspec = torch.matmul(mel_basis, x)
+            melspec = mel_transform(x)
+            # melspec = torch.matmul(mel_basis, x)
 
         # Step 4: log scaling
         melspec.add_(1e-5).log_()
@@ -847,3 +848,59 @@ class AugmentMelSTFT(nn.Module):
         melspec.add_(4.5).div_(5.)
 
         return melspec
+
+
+def pre_emphasis(x, coeff=0.97):
+    # x: (B, T)
+    return torch.cat([x[:, :1], x[:, 1:] - coeff * x[:, :-1]], dim=1)
+
+
+class AugmentScatteringSTFT(nn.Module):
+    def __init__(self, signal_len=10, sr=32000, J=6, Q=8, proj_dim=128, freqm=48, timem=192):
+        super().__init__()
+        self.sr = sr
+
+        # Scattering encoder
+        self.scattering = Scattering1D(J=J, shape=signal_len * sr, Q=Q)
+        self.temporal_pool = nn.AdaptiveAvgPool1d(signal_len * 100)
+        self.project = nn.Conv1d(in_channels=self.scattering.output_size(), out_channels=proj_dim, kernel_size=1)
+
+        # Frequency and time masking (optional)
+        if freqm == 0:
+            self.freqm = nn.Identity()
+        else:
+            self.freqm = torchaudio.transforms.FrequencyMasking(freqm, iid_masks=True)
+
+        if timem == 0:
+            self.timem = nn.Identity()
+        else:
+            self.timem = torchaudio.transforms.TimeMasking(timem, iid_masks=True)
+
+    def forward(self, x):
+        """
+        x: (B, T) where T == self.len
+        """
+        # Step 1: Pre-emphasis
+        x = pre_emphasis(x)
+
+        # Step 2: Scattering Transform
+        x = self.scattering(x)  # (B, C, T')
+
+        # Step 3: Temporal pooling
+        x = self.temporal_pool(x)
+
+        # Step 4: projection (C → n_mels like)
+        x = self.project(x)  # (B, proj_dim, T')
+
+        # Step 5: Log scaling (mimicking log-mel)
+        x.add_(1e-5).log_()
+
+        # Step 6: Optional masking
+        if self.training:
+            x = self.freqm(x)
+            x = self.timem(x)
+
+        # Step 7: Normalization (same scale as mel)
+        x.add_(4.5).div_(5.)
+
+        return x

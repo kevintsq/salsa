@@ -1,6 +1,6 @@
 import torch
 
-from models.audio.external.MobileNetV3 import get_model as get_mobile_net
+from models.audio.external.MobileNetV3 import get_model as get_mobile_net, AugmentScatteringSTFT
 from models.audio.external.dymn.model import get_model as get_dymn
 from models.audio.external.MobileNetV3 import AugmentMelSTFT
 
@@ -19,7 +19,7 @@ class Wrapper(torch.nn.Module):
         return out
 
 
-def get_efficientat(model_name='mn40_as_ext', freqm=48, timem=192, return_sequence=False, **kwargs):
+def get_efficientat(model_name='mn40_as_ext', freqm=48, timem=192, scatter=False, **kwargs):
     # get the PaSST model wrapper, includes Melspectrogram and the default pre-trained transformer
     if "mn40_as_ext" == model_name:
         model = get_mobile_net(width_mult=4.0, pretrained_name=model_name)
@@ -32,8 +32,10 @@ def get_efficientat(model_name='mn40_as_ext', freqm=48, timem=192, return_sequen
 
     # print(model.mel)  # Extracts mel spectrogram from raw waveforms.
 
-    mel = AugmentMelSTFT(n_mels=128, sr=32000, win_length=800, hopsize=320, n_fft=1024, freqm=freqm,
-                         timem=timem)
+    if scatter:
+        mel = AugmentScatteringSTFT()
+    else:
+        mel = AugmentMelSTFT(n_mels=128, sr=32000, win_length=800, hopsize=320, n_fft=1024, freqm=freqm, timem=timem)
 
     wrapper = Wrapper(mel, model)
 
