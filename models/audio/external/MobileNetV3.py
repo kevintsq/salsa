@@ -887,6 +887,18 @@ class AugmentScatteringSTFT(nn.Module):
         # Step 2: Scattering Transform
         x = self.scattering(x)  # (B, C, T')
 
+        # import matplotlib.pyplot as plt
+        # import numpy as np
+        # 假设 x.shape 是 (B, proj_dim, T') 例如 (16, 128, 1000)
+        # for i in range(min(3, x.shape[0])):  # 只画前 3 个
+        #     img = x[i].detach().cpu().numpy()  # shape: (128, T')
+        #     plt.figure(figsize=(10, 4))
+        #     plt.imshow(img, aspect='auto', origin='lower', cmap='magma')
+        #     plt.colorbar()
+        #     plt.title(f'Scatter Transform for Sample {i}')
+        #     plt.tight_layout()
+        #     plt.savefig(f'scatter_sample_{i}.png')
+
         # Step 3: projection (C → n_mels like)
         x = self.project(x)  # (B, proj_dim, T')
 
