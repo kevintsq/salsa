@@ -1,4 +1,4 @@
-CUDA_VISIBLE_DEVICES=1 python -m experiments.ex_dcase24 with \
+CUDA_VISIBLE_DEVICES=0 python -m experiments.ex_dcase24 with \
 data_loader.batch_size=16 \
 data_loader.batch_size_eval=16 \
 audio_features.segment_length=10 \

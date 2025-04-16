@@ -862,8 +862,9 @@ class AugmentScatteringSTFT(nn.Module):
 
         # Scattering encoder
         self.scattering = Scattering1D(J=J, shape=signal_len * sr, Q=Q)
-        self.temporal_pool = nn.AdaptiveAvgPool1d(signal_len * 100)
-        self.project = nn.Conv1d(in_channels=self.scattering.output_size(), out_channels=proj_dim, kernel_size=1)
+        size = self.scattering.output_size()
+        self.project = nn.Conv1d(in_channels=size, out_channels=proj_dim, kernel_size=5, stride=5)
+        self.norm = nn.LayerNorm(normalized_shape=proj_dim)
 
         # Frequency and time masking (optional)
         if freqm == 0:
@@ -886,21 +887,12 @@ class AugmentScatteringSTFT(nn.Module):
         # Step 2: Scattering Transform
         x = self.scattering(x)  # (B, C, T')
 
-        # Step 3: Temporal pooling
-        x = self.temporal_pool(x)
-
-        # Step 4: projection (C → n_mels like)
+        # Step 3: projection (C → n_mels like)
         x = self.project(x)  # (B, proj_dim, T')
 
-        # Step 5: Log scaling (mimicking log-mel)
-        x.add_(1e-5).log_()
-
-        # Step 6: Optional masking
+        # Step 4: Optional masking
         if self.training:
             x = self.freqm(x)
             x = self.timem(x)
-
-        # Step 7: Normalization (same scale as mel)
-        x.add_(4.5).div_(5.)
 
         return x

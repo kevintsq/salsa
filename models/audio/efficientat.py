@@ -13,8 +13,7 @@ class Wrapper(torch.nn.Module):
         self.model = model
 
     def forward(self, x, **kwargs):
-        with torch.no_grad():
-            mel = self.mel(x)
+        mel = self.mel(x)
         out = self.model(mel[:, None])[:, None, None, :]
         return out
 
