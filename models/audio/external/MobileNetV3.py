@@ -803,9 +803,9 @@ class AugmentMelSTFT(nn.Module):
     def forward(self, x):
         # Step 1: pre-emphasis
         x = nn.functional.conv1d(x.unsqueeze(1), self.preemphasis_coefficient).squeeze(1)
-        # x = stft(x, self.n_fft, hop_length=self.hopsize, win_length=self.win_length,
-        #          center=True, normalized=False, window=self.window, return_complex=False)
-        # x = x.square_().sum(dim=-1)  # power mag
+        x = stft(x, self.n_fft, hop_length=self.hopsize, win_length=self.win_length,
+                 center=True, normalized=False, window=self.window, return_complex=False)
+        x = x.square_().sum(dim=-1)  # power mag
 
         # Step 2: dynamic fmin/fmax augmentation
         if self.training:
@@ -816,25 +816,25 @@ class AugmentMelSTFT(nn.Module):
             fmax = self.fmax
 
         # Step 3: mel spectrogram
-        mel_transform = torchaudio.transforms.MelSpectrogram(
-            sample_rate=self.sr,
-            n_fft=self.n_fft,
-            hop_length=self.hopsize,
-            win_length=self.win_length,
-            window_fn=torch.hann_window,
-            n_mels=self.n_mels,
-            f_min=fmin,
-            f_max=fmax,
-            power=2.0,
-            normalized=False,
-        ).to(x.device)
+        # mel_transform = torchaudio.transforms.MelSpectrogram(
+        #     sample_rate=self.sr,
+        #     n_fft=self.n_fft,
+        #     hop_length=self.hopsize,
+        #     win_length=self.win_length,
+        #     window_fn=torch.hann_window,
+        #     n_mels=self.n_mels,
+        #     f_min=fmin,
+        #     f_max=fmax,
+        #     power=2.0,
+        #     normalized=False,
+        # ).to(x.device)
 
-        # mel_basis, _ = get_mel_banks_safe(self.n_mels, self.n_fft, self.sr, fmin, fmax,
-        #                                   vtln_low=100.0, vtln_high=-500., vtln_warp_factor=1.0)
-        # mel_basis = torch.nn.functional.pad(mel_basis.cuda(), (0, 1), mode='constant', value=0)
+        mel_basis, _ = get_mel_banks_safe(self.n_mels, self.n_fft, self.sr, fmin, fmax,
+                                          vtln_low=100.0, vtln_high=-500., vtln_warp_factor=1.0)
+        mel_basis = torch.nn.functional.pad(mel_basis.cuda(), (0, 1), mode='constant', value=0)
         with torch.amp.autocast('cuda', enabled=False):
-            melspec = mel_transform(x)
-            # melspec = torch.matmul(mel_basis, x)
+            # melspec = mel_transform(x)
+            melspec = torch.matmul(mel_basis, x)
 
         # Step 4: log scaling
         melspec.add_(1e-5).log_()
@@ -889,8 +889,7 @@ class AugmentScatteringSTFT(nn.Module):
 
         # import matplotlib.pyplot as plt
         # import numpy as np
-        # 假设 x.shape 是 (B, proj_dim, T') 例如 (16, 128, 1000)
-        # for i in range(min(3, x.shape[0])):  # 只画前 3 个
+        # for i in range(min(3, x.shape[0])):
         #     img = x[i].detach().cpu().numpy()  # shape: (128, T')
         #     plt.figure(figsize=(10, 4))
         #     plt.imshow(img, aspect='auto', origin='lower', cmap='magma')
