@@ -1,0 +1,21 @@
+# Repository Overview
+
+This repository contains the implementation of a system for **language-based audio retrieval**. The system improves retrieval performance by estimating audio–caption correspondences and leveraging them during training.
+
+## Repository Structure
+
+- **`stage1.sh`**: Bash script for training the model in Stage 1.
+- **`experiments/`**: Contains Python scripts for training, evaluation, and embedding generation. Key file: `ex_dcase24.py`.
+- **`scripts/`**: Bash scripts for downloading datasets and pre-trained models.
+- **`models/`**: Includes model definitions and utilities for audio and text feature extraction.
+- **`data/`**: Handles dataset loading and preprocessing.
+- **`README.md`**: Documentation for setting up and using the repository.
+- **`environment.yml`**: Conda environment file for dependency installation.
+
+## Getting Started
+
+1. Set up the environment. Note: `environment.yml` is outdated.
+2. Download datasets and pre-trained models using scripts in `scripts/`.
+3. Train or evaluate the model using the commands provided in the `README.md`.
+
+For detailed instructions, refer to the main `README.md` file in the repository.
