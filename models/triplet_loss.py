@@ -18,9 +18,9 @@ class TripletLossHardNegMiningPlus(nn.Module):
 
     def forward(self, f1, f2):
         anchor = f1
-        anchor_negative = torch.roll(f1, shifts=1, dims=1)
+        anchor_negative = torch.roll(f1, shifts=1, dims=0)
         positive = f2
-        negative = torch.roll(f2, shifts=1, dims=1)
+        negative = torch.roll(f2, shifts=1, dims=0)
 
         # select in-triplet hard negative, reference: section3.3
         with torch.no_grad():
