@@ -5,7 +5,7 @@ from torch import nn
 class TripletLossHardNegMiningPlus(nn.Module):
     def __init__(self, margin=1.):
         """
-        triplet loss with hard negative mining, four cases. inspired by http://www.bmva.org/bmvc/2016/papers/paper119/paper119.pdf section3.3
+        triplet loss with hard negative mining, four cases. inspired by https://bmva-archive.org.uk/bmvc/2016/papers/paper119/paper119.pdf section3.3
         :param criterion: loss function
         :param f1: [lvl, B, C, H, W]
         :param f2: [lvl, B, C, H, W]
